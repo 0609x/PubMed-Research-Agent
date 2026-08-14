@@ -1,4 +1,4 @@
-﻿# Python
+# Python
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -11,6 +11,12 @@ venv/
 .venv/
 env/
 
+# Node / Vue frontend
+node_modules/
+frontend/node_modules/
+frontend/dist/
+*.local
+
 # IDE
 .vscode/
 .idea/
@@ -20,10 +26,11 @@ env/
 # Environment
 .env
 
-# Database
+# Database & runtime data
 *.db
 *.sqlite3
-database/*.db
+data/*.db
+data/cache/
 
 # ChromaDB
 chroma_data/
@@ -38,3 +45,6 @@ Thumbs.db
 # Logs
 *.log
 logs/
+
+# Test cache
+.pytest_cache/

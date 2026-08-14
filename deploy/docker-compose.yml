@@ -1,0 +1,45 @@
+# Docker Compose deployment for PubMed-Research-Agent.
+#
+# Usage (from the repository root):
+#   docker compose -f deploy/docker-compose.yml up -d --build
+#
+# Services:
+#   backend  - FastAPI on :8000 (docs at /docs)
+#   frontend - Vue3 build served by nginx on :8080 (proxies /api to backend)
+
+services:
+  backend:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.backend
+    container_name: pubmed-backend
+    # Inject all secrets/config from the root .env (never baked into the image).
+    env_file:
+      - ../.env
+    ports:
+      - "8000:8000"
+    volumes:
+      # Persist SQLite data, prompt cache, and conversation sessions.
+      - ../data:/app/data
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')"
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.frontend
+    container_name: pubmed-frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+    restart: unless-stopped

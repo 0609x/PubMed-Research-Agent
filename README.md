@@ -1,326 +1,273 @@
 # PubMed Research Agent 🔬
 
-> 🧠 AI 驱动的医学文献智能分析系统 &mdash; &mdash; 输入一个研究问题，30秒内获得结构化文献综述报告。
+> AI 驱动的医学文献智能分析系统：输入一个研究问题（如 **"SEC61G in Lung Cancer"**），
+> 自动检索 PubMed、总结文献、提炼研究热点与未来方向，并支持 RAG 问答与知识图谱可视化。
 
 [![Python](https://img.shields.io/badge/Python-3.11%2B-blue?logo=python)](https://www.python.org/downloads/)
-[![Streamlit](https://img.shields.io/badge/Streamlit-1.40%2B-FF4B4B?logo=streamlit)](https://streamlit.io/)
-[![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
-[![Tests](https://img.shields.io/badge/Tests-61%20passed-brightgreen)]()
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-009688?logo=fastapi)](https://fastapi.tiangolo.com/)
+[![Vue3](https://img.shields.io/badge/Vue3-3.5%2B-42b883?logo=vuedotjs)](https://vuejs.org/)
 [![Model](https://img.shields.io/badge/Supports-GPT%7CDeepSeek%7CQwen-purple)]()
 
 ---
 
-## 📖 目录
+## 目录
 
-- [项目简介](#项目简介)
-- [效果预览](#效果预览)
-- [环境准备](#环境准备)
-- [5步部署](#5步部署)
-- [使用教程](#使用教程)
+- [功能特性](#功能特性)
+- [系统架构](#系统架构)
+- [页面详情](#页面详情)
+- [快速开始](#快速开始)
+- [API 概览](#api-概览)
+- [运行测试](#运行测试)
 - [常见问题](#常见问题)
-- [模型选择](#模型选择)
-- [项目结构](#项目结构)
 
 ---
 
-## 项目简介
+## 功能特性
 
-你只需要输入一个研究问题，比如：
-
-> **"SEC61G in Lung Cancer"**
-
-系统会自动完成以下全部工作：
-
-| 步骤 | 做了什么 | 你看到的 |
-|------|----------|------------|
-| 🔍 检索 | 自动调用 PubMed API，搜索全球生物医学文献 | 文献列表（标题、摘要、PMID、DOI、作者） |
-| 🧠 分析 | LLM 大模型智能读懂所有摘要 | 5维结构化分析报告 |
-| 📊 输出 | 自动提炼研究热点、未来方向 | 可复制、可导出 JSON/Markdown |
+| 能力 | 说明 |
+|------|------|
+| 🔍 PubMed 检索 | 关键词检索 / 高级检索（问题改写），支持时间、相关度排序与年份、影响因子筛选 |
+| 🧠 AI 总结 | 大模型输出研究背景、当前热点、主要发现、研究方法、未来方向 |
+| 📊 研究看板 | 检索统计、热门词趋势、期刊/年份/影响因子分布，支持关键词管理 |
+| 🕸️ 知识图谱 | 文献/作者/期刊关系入库 Neo4j，子图查询与相关文献推荐 |
+| 💬 RAG 问答 | 基于已入库文献的多轮对话，答案附带 PMID 来源引用 |
+| 📚 文献收藏 | 收藏重要文献并导出 BibTeX，支持中英文摘要互译 |
+| ⚡ 性能优化 | Query Rewrite、Hybrid Search、Rerank、Context Compression、Prompt Cache、Memory |
 
 ---
 
-## 效果预览
+## 系统架构
 
-输入关键词 **SEC61G**，系统输出：
+```mermaid
+flowchart TB
+    subgraph FE["前端层 · Vue3 + TypeScript"]
+        UI["页面组件<br/>Element Plus + Pinia"]
+        API["API 客户端<br/>Vite 代理 /api → :8000"]
+    end
+    subgraph BE["后端层 · FastAPI"]
+        ROUTER["API 路由<br/>/search · /rag · /graph · /translate"]
+        SVC["服务层<br/>检索 / 总结 / 排序 / 翻译 / 统计"]
+    end
+    subgraph AGENT["智能体层 · ResearchAgent"]
+        QW["Query Rewrite<br/>中文问题 → PubMed 检索式"]
+        HS["Hybrid Search<br/>关键词 + 语义（Qdrant）"]
+        RR["Rerank<br/>LLM 重排序"]
+        CC["Context Compression<br/>上下文压缩"]
+        SM["Summarize<br/>结构化文献总结"]
+    end
+    subgraph EXT["外部服务层"]
+        PUB["PubMed<br/>E-utilities"]
+        LLM["LLM<br/>GPT / DeepSeek / Qwen"]
+        QD["Qdrant<br/>向量存储"]
+        NEO["Neo4j Aura<br/>知识图谱"]
+    end
+
+    UI --> API --> ROUTER
+    ROUTER --> SVC
+    SVC --> AGENT
+    QW --> HS --> RR --> CC --> SM
+    AGENT --> PUB
+    AGENT --> LLM
+    SVC --> QD
+    SVC --> NEO
+```
+
+### 分层说明
+
+| 层 | 技术 | 职责 |
+|----|------|------|
+| 前端层 | Vue3 + TypeScript + Element Plus + Pinia | 页面展示、交互、状态管理；Vite 代理 `/api` 到后端 |
+| 后端层 | FastAPI + SQLAlchemy(async) | REST API、鉴权配置、数据持久化、业务编排 |
+| 智能体层 | ResearchAgent 管线 | 问题改写 → 混合检索 → 重排 → 压缩 → 总结 |
+| 外部服务层 | PubMed / LLM / Qdrant / Neo4j | 文献数据源、模型推理、向量库、知识图谱 |
+
+### 目录结构
+
+项目采用 **5 大目录** 组织，根目录只保留入口配置：
 
 ```
-✅ 状态：COMPLETED  |  文献：10篇  |  耗时：1.62秒  |  模型：gpt-4o
-
-📄 文献列表（可展开摘要，一键跳转 PubMed）
-📚 研究背景（3段综述）
-🔥 研究热点（双栏卡片，带 PMID 证据）
-💡 主要发现（要点列表）
-🧪 实验方法（使用频次统计）
-🚀 未来方向（方向 + 理由 + 挑战）
+PubMed-Research-Agent/
+├── backend/                  # 后端全部 Python 代码
+│   ├── app/                  # FastAPI 应用（api / core / models / schemas）
+│   ├── agents/               # 智能体（ResearchAgent、QueryRewriter）
+│   ├── services/             # 业务服务（检索、总结、向量、图谱、排序等）
+│   ├── tools/                # 外部工具封装（PubMedSearchTool）
+│   ├── tests/                # 单元测试 + 集成测试
+│   └── alembic/              # 数据库迁移
+├── frontend/                 # Vue3 前端（Vite + TS）
+│   └── src/views/            # 6 个页面视图
+├── data/                     # 运行时数据（SQLite、缓存、期刊指标表）
+├── deploy/                   # 部署文件（Docker Compose、Dockerfile）
+├── docs/                     # 项目文档与截图
+├── .env.example              # 环境变量模板
+├── requirements.txt          # Python 依赖（开发/测试）
+└── README.md
 ```
 
 ---
 
-## 环境准备
+## 页面详情
 
-### 你需要安装以下软件
+系统共 6 个页面，通过左侧菜单导航切换。
 
-| 软件 | 下载地址 | 安装说明 |
-|------|----------|----------|
-| **Python 3.11+** | [python.org/downloads](https://www.python.org/downloads/) |  安装时**勾选** "Add Python to PATH"  |
-| **Git** | [git-scm.com/downloads](https://git-scm.com/downloads) | 一路默认即可 |
-| **VS Code**（推荐） | [code.visualstudio.com](https://code.visualstudio.com/) | 可选，方便编辑配置文件 |
+### 1. 文献检索（`/search`）
 
-### 你需要以下账号（全部免费）
+默认首页。输入研究问题，一键完成"检索 → 总结 → 分析"。
 
-| 服务 | 注册地址 | 用途 |
-|------|----------|------|
-| **OpenAI**（或其他模型） | [platform.openai.com](https://platform.openai.com/) | LLM 分析文献 |
-| **NCBI**（可选） | [account.ncbi.nlm.nih.gov](https://account.ncbi.nlm.nih.gov/) | PubMed API Key（提升速度） |
+- **检索方式**：关键词检索（直接匹配） / 高级检索（自动改写为 PubMed 检索式，支持中文输入）
+- **排序与筛选**：相关度、发表时间（升/降序）；按年份区间、影响因子阈值过滤
+- **结果列表**：标题、摘要、PMID、DOI、作者、期刊、发表日期
+- **AI 总结**：研究背景 / 当前研究热点 / 主要发现 / 实验验证方法 / 未来研究方向
+- **交互**：单篇翻译、收藏文献、复制结果
 
-> **没有 OpenAI 账号也能用！** 支持 DeepSeek、Qwen、本地 Ollama 等任何 OpenAI 兼容接口，详见 [模型选择](#模型选择)。
+![文献检索页](docs/screenshots/search.png)
+
+![文献检索页（检索结果与 AI 总结）](docs/screenshots/search01.png)
+
+### 2. AI 问答（`/chat`）
+
+基于已入库文献的 RAG 对话，支持中英文回答，答案附带 PMID 来源引用，可多轮追问。
+
+![RAG 问答页](docs/screenshots/chat.png)
+
+### 3. 检索历史（`/history`）
+
+展示历史检索记录（查询词、时间等），可一键重新加载历史结果。
+
+![检索历史页](docs/screenshots/history.png)
+
+### 4. 知识图谱（`/graph`）
+
+文献-作者-期刊关系图谱：
+
+- **图谱状态**：显示 Neo4j 连接是否就绪
+- **可视化**：交互式图谱画布，节点与关系可视化
+- **查询**：子图查询、相关文献推荐（以 PMID 关联）
+
+![知识图谱页](docs/screenshots/graph.png)
+
+### 5. 文献收藏（`/library`）
+
+收藏的文献列表，支持 **BibTeX 导出**，便于引用管理。
+
+![文献收藏页](docs/screenshots/library.png)
+
+### 6. 研究看板（`/dashboard`）
+
+检索行为统计与热点分析：
+
+- 总检索次数、总文献数、期刊分布、年份分布、影响因子分布
+- **热门检索词**：自动从改写后的英文检索词与中文查询中提取，支持关键词管理（单条/全部删除）
+
+![研究看板页](docs/screenshots/dashboard.png)
 
 ---
 
-## 5步部署
+## 快速开始
 
-### 第 1 步：下载项目
+### 环境要求
 
-打开终端（命令提示符或 PowerShell），输入：
+- Python 3.11+（推荐 3.13）
+- Node.js 18+（推荐 22）
+- 一个 OpenAI 兼容的 LLM API（DeepSeek / Qwen / GPT 均可）
+- （可选）Qdrant 云实例、Neo4j Aura 实例
+
+### 1. 配置环境变量
 
 ```bash
-git clone https://github.com/0609x/PubMed-Research-Agent.git
-cd PubMed-Research-Agent
-```
-
-> 👉 不会用 git？直接点 GitHub 页面的绿色 **Code** 按钮 → **Download ZIP** → 解压到任意文件夹。
-
-### 第 2 步：安装依赖
-
-在项目目录内执行：
-
-```bash
-pip install -r requirements.txt
-```
-
-> ❓ 如果报错 `pip: command not found`，说明你安装 Python 时没有勾选 "Add Python to PATH"。解决办法看 [常见问题](#常见问题)。
-
-### 第 3 步：配置环境变量
-
-复制配置文件模板：
-
-```bash
-# Windows PowerShell
-copy .env.example .env
-
-# Mac/Linux
+# 复制模板并填写密钥
 cp .env.example .env
 ```
 
-用 VS Code 或记事本打开 `.env` 文件，修改以下两项：
+| 变量 | 必填 | 说明 |
+|------|------|------|
+| `LLM_API_BASE` | ✅ | OpenAI 兼容接口地址，如 `https://api.deepseek.com` |
+| `LLM_API_KEY` | ✅ | 模型 API Key |
+| `LLM_MODEL` | ✅ | 模型名，如 `deepseek-chat` / `gpt-4o` / `qwen-plus` |
+| `QDRANT_URL` / `QDRANT_API_KEY` | 可选 | 向量库（RAG 混合检索） |
+| `NEO4J_URI` / `NEO4J_USERNAME` / `NEO4J_PASSWORD` | 可选 | 知识图谱 |
+| `EMBED_API_KEY` / `EMBED_MODEL_NAME` | 可选 | DashScope 嵌入模型（向量化） |
+| `PUBMED_API_KEY` | 可选 | NCBI Key，提升检索限流（10 次/秒） |
 
-```ini
-# 你的邮箱（NCBI 要求，任意真实邮箱即可）
-PUBMED_EMAIL=your_email@example.com
+### 2. 启动后端
 
-# 你的 LLM API Key（去对应平台获取）
-LLM_API_KEY=sk-your-api-key-here
+```bash
+# 创建虚拟环境（首次）
+python -m venv .venv
+.venv\Scripts\activate          # Windows
+# source .venv/bin/activate      # macOS / Linux
+
+# 安装依赖
+pip install -r requirements.txt
+
+# 启动后端（在项目根目录）
+uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-> **重要：** `.env` 文件包含密钥，不要上传到 GitHub！已经在 `.gitignore` 中排除。
+后端启动后访问 http://localhost:8000/docs 查看 Swagger 文档。
 
-### 第 4 步：启动系统
+### 3. 启动前端
 
 ```bash
 cd frontend
-streamlit run app.py
+npm install          # 首次
+npm run dev
 ```
 
-### 第 5 步：打开浏览器
+浏览器访问 http://localhost:5173 ，Vite 已将 `/api` 代理到后端 :8000。
 
-终端会显示：
+### 4. Docker 一键部署
 
+```bash
+# 在项目根目录执行
+docker compose -f deploy/docker-compose.yml up -d --build
 ```
-  You can now view your Streamlit app in your browser.
-  Local URL: http://localhost:8501
-```
 
-在浏览器中打开 **http://localhost:8501**
-
-🎉 部署完成！接下来看怎么用。
+- 后端：http://localhost:8000
+- 前端：http://localhost:8080
+- `data/` 目录通过卷挂载持久化（SQLite、缓存、会话）
 
 ---
 
-## 使用教程
+## API 概览
 
-### 1. 填写左侧配置
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/v1/health` | 健康检查 |
+| POST | `/api/v1/search` | 文献检索（关键词 / 高级） |
+| GET | `/api/v1/search/stats` | 研究看板统计 |
+| POST | `/api/v1/search/keywords/action` | 热门检索词管理 |
+| POST | `/api/v1/rag/query` | RAG 问答 |
+| GET | `/api/v1/graph/stats` | 知识图谱状态 |
+| GET | `/api/v1/graph/subgraph` | 子图查询 |
+| GET | `/api/v1/graph/related` | 相关文献 |
+| POST | `/api/v1/translate` | 摘要翻译 |
 
-打开页面后，看到左侧 **Settings** 面板：
+---
 
-| 区域 | 填什么 | 示例 |
-|------|----------|------|
-| **Email** | 你的邮箱 | `myname@qq.com` |
-| **Base URL** | LLM API 地址 | `https://api.openai.com/v1` |
-| **API Key** | LLM 密钥 | `sk-proj-xxxxxxxx` |
-| **Model** | 下拉选择模型 | `gpt-4o-mini`（便宜） |
-| **Language** | 输出语言 | `zh`（中文） |
-| **Verify SSL** | 取消勾选 | （大多数用户） |
+## 运行测试
 
-### 2. 搜索
+```bash
+# 后端测试（在项目根目录）
+.venv\Scripts\python.exe -m pytest backend/tests -q
 
-在页面顶部输入任意研究问题：
-
+# 前端类型检查与构建
+cd frontend
+npm run build        # vue-tsc + vite build
 ```
-SEC61G in Lung Cancer
-PD-L1 immunotherapy NSCLC
-CRISPR cancer therapy review
-……
-```
-
-点击 **🔍 Search** 按钮，等待 10-30 秒。
-
-### 3. 查看结果
-
-搜索完成后，页面会展示：
-
-- **顶部状态栏**：完成状态、文献数量、耗时、使用模型
-- **📄 文献列表**：点击 "Show Abstract" 展开摘要，点 PMID 直达 PubMed 原文
-- **📚 研究背景**：2-3 段综合综述
-- **🔥 研究热点**：双栏卡片，附 PMID 证据
-- **💡 主要发现**：要点列表
-- **🧪 实验方法**：使用频次统计
-- **🚀 未来方向**：方向 + 理由 + 挑战
-
-### 4. 导出报告
-
-页面底部三个按钮：
-
-| 按钮 | 功能 |
-|------|------|
-| **📥 JSON** | 下载 `.json` 文件（完整数据） |
-| **📄 Markdown** | 下载 `.md` 文件（可直接粘贴到论文/笔记） |
-| **📋 Copy JSON** | 复制到剪贴板 |
 
 ---
 
 ## 常见问题
 
-### Q1：`pip: command not found`
+**Q：搜索结果都是英文，能翻译吗？**
+可以。文献详情提供中英文摘要互译，AI 问答也支持语言选择。
 
-**原因：** Python 没有加入系统 PATH。
+**Q：检索提示 PubMed 限流？**
+在 `.env` 配置 `PUBMED_API_KEY`（NCBI 免费申请），速率提升至 10 次/秒。
 
-**解决：**
-1. 搜索打开 "Python" ⇒ 点击 **Modify**（修改）
-2. 勾选 **"Add Python to PATH"** ⇒ Install
-3. **重启终端**，再试一次
+**Q：Neo4j / Qdrant 报认证失败？**
+确认 `.env` 中的地址、用户名、密码与云端控制台一致；新建实例后通常等待 1 分钟左右才能连接。
 
-### Q2：启动报错 `ModuleNotFoundError: No module named 'xxx'`
-
-```bash
-# 缺什么就安装什么
-pip install httpx pydantic biopython
-```
-
-### Q3：搜索报错 `SSL: CERTIFICATE_VERIFY_FAILED`
-
-**原因：** 公司网络或代理环境。
-
-**解决：** 左侧面板取消勾选 **Verify SSL**。
-
-### Q4：搜索报错 `LLM API returned 401`
-
-**原因：** API Key 填错了或没有余额。
-
-**解决：**
-- 检查 API Key 是否复制完整（没有多余空格）
-- 登录对应平台查看余额
-
-### Q5：搜索报错 `LLM API returned 404`
-
-**原因：** Base URL 填错了。
-
-**解决：** 确认 Base URL 以 `/v1` 结尾：
-
-| 模型 | Base URL |
-|------|----------|
-| OpenAI | `https://api.openai.com/v1` |
-| DeepSeek | `https://api.deepseek.com/v1` |
-| Qwen（阿里） | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
-
-### Q6：搜索结果为 0
-
-**原因：** PubMed API 限流或网络不可达。
-
-**解决：**
-1. 等待 30 秒后重试（NCBI 没有 API Key 时限速 3次/秒）
-2. 申请免费 NCBI API Key：[account.ncbi.nlm.nih.gov](https://account.ncbi.nlm.nih.gov/) → API Key Management
-
-### Q7：分析结果为空
-
-**原因：** LLM 模型不支持 `response_format: json_object`。
-
-**解决：**
-- 部分旧版模型和本地 Ollama 模型可能不支持 JSON mode
-- 建议换用 `gpt-4o-mini`（最便宜）或 `deepseek-chat`
-
----
-
-## 模型选择
-
-页面左侧 **Model** 下拉框支持以下模型，切换即用：
-
-| 模型 | 价格 | 速度 | 质量 | 适合场景 |
-|------|------|------|------|----------|
-| `gpt-4o-mini` | ★ 便宜 | 快 | 优秀 | ★★★ 日常使用，推荐 |
-| `gpt-4o` | ★★★ 贵 | 中 | 最佳 | 重要分析 |
-| `deepseek-chat` | ★ 便宜 | 快 | 优秀 | 国内用户首选 |
-| `qwen-plus` | ★ 便宜 | 快 | 良好 | 阿里云用户 |
-
-> **本地模型？** Base URL 填 `http://localhost:11434/v1`（Ollama），Model 手动输入 `llama3` 或 `qwen2.5`。
-
----
-
-## 项目结构
-
-```
-PubMed-Research-Agent/
-├── agents/                  # AI Agent 定义
-│   ├── research_agent.py    # 主 Agent——检索→总结→报告全流程编排
-│   └── query_rewrite.py      # 查询改写——自然语言→PubMed检索式
-├── services/                # 核心业务服务
-│   ├── literature_summary.py # LLM 文献总结（5维分析）
-│   ├── hybrid_search.py      # 混合检索（关键词+语义）
-│   ├── reranker.py           # 精排重排序（Pointwise/Listwise）
-│   ├── context_compressor.py # 上下文压缩（降低Token消耗）
-│   ├── prompt_cache.py       # 提示缓存（重复查询免费）
-│   └── memory.py             # 对话记忆（多轮追问）
-├── tools/                   # 工具层
-│   └── pubmed_tool.py         # PubMed API 封装
-├── frontend/                # Streamlit 前端
-│   ├── app.py                 # 主页面（深色主题UI）
-│   └── api_client.py          # Agent 调用封装
-├── tests/                   # 单元测试（61个）
-├── requirements.txt         # Python 依赖清单
-├── .env.example             # 环境变量模板
-└── README.md                # 本文档
-```
-
----
-
-## 技术栈
-
-| 层级 | 技术 |
-|------|------|
-| 前端 | Streamlit |
-| 检索 | PubMed Entrez API + Biopython |
-| LLM | OpenAI 兼容接口（GPT / DeepSeek / Qwen / Ollama） |
-| 向量数据库 | ChromaDB（可选） |
-| 数据库 | SQLite（开箱即用） |
-| HTTP 客户端 | httpx |
-| 数据验证 | Pydantic v2 |
-| 测试 | pytest（61 个测试，100% 通过） |
-
----
-
-## 📝 License
-
-MIT © 2026
-
----
-
-开始你的第一次 AI 文献分析吧 🚀
+**Q：不想使用知识图谱 / 向量库？**
+在 `.env` 设置 `NEO4J_ENABLED=false` / `VECTOR_STORE_ENABLED=false` 关闭对应功能。
