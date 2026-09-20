@@ -193,7 +193,7 @@ cp .env.example .env
 | `LLM_API_BASE` | ✅ | OpenAI 兼容接口地址，如 `https://api.deepseek.com` |
 | `LLM_API_KEY` | ✅ | 模型 API Key |
 | `LLM_MODEL` | ✅ | 模型名，如 `deepseek-chat` / `gpt-4o` / `qwen-plus` |
-| `QDRANT_URL` / `QDRANT_API_KEY` | 可选 | 向量库（RAG 混合检索） |
+| `CHROMA_PERSIST_DIR` / `CHROMA_COLLECTION_NAME` | 可选 | 本地 ChromaDB 向量库（收藏文献 RAG） |
 | `NEO4J_URI` / `NEO4J_USERNAME` / `NEO4J_PASSWORD` | 可选 | 知识图谱 |
 | `EMBED_API_KEY` / `EMBED_MODEL_NAME` | 可选 | DashScope 嵌入模型（向量化） |
 | `PUBMED_API_KEY` | 可选 | NCBI Key，提升检索限流（10 次/秒） |
