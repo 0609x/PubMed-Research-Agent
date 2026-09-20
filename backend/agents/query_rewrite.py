@@ -20,7 +20,10 @@ import json
 import logging
 import hashlib
 import re
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from backend.services.prompt_cache import PromptCache
 
 logger = logging.getLogger(__name__)
 
@@ -67,8 +70,9 @@ TRANSLATE_USER = (
 class QueryRewriter:
     """Rewrite natural language queries into optimized PubMed syntax."""
 
-    def __init__(self, llm, cache_dir: Optional[str] = None) -> None:
+    def __init__(self, llm, cache: Optional["PromptCache"] = None) -> None:
         self.llm = llm
+        self.shared_cache = cache
         self._cache: dict[str, dict] = {}
         logger.info("QueryRewriter initialized")
 
@@ -80,6 +84,15 @@ class QueryRewriter:
             result = dict(self._cache[cache_key])
             result["cached"] = True
             return result
+        shared_key = f"query-rewrite:{query.strip().lower()}"
+        if self.shared_cache is not None:
+            cached = self.shared_cache.get(shared_key)
+            if isinstance(cached, dict):
+                result = dict(cached)
+                result["cached"] = True
+                self._cache[cache_key] = dict(result)
+                logger.info("Shared query rewrite cache HIT for %r", query[:60])
+                return result
 
         logger.info("Rewriting query: %r", query[:80])
         system = QUERY_REWRITE_SYSTEM
@@ -106,6 +119,8 @@ class QueryRewriter:
             "cached": False,
         }
         self._cache[cache_key] = dict(result)
+        if self.shared_cache is not None:
+            self.shared_cache.set(shared_key, result)
         return result
 
     def translate_to_english(self, query: str) -> str:
@@ -124,6 +139,13 @@ class QueryRewriter:
             if cached:
                 logger.info("Query translation cache HIT for %r", query[:60])
                 return cached
+        shared_key = f"query-translation:{query.strip().lower()}"
+        if self.shared_cache is not None:
+            cached = self.shared_cache.get(shared_key)
+            if isinstance(cached, str) and cached:
+                self._cache[cache_key] = {"translated_query": cached}
+                logger.info("Shared query translation cache HIT for %r", query[:60])
+                return cached
 
         logger.info("Translating query to English: %r", query[:80])
         try:
@@ -139,6 +161,8 @@ class QueryRewriter:
             return query
 
         self._cache[cache_key] = {"translated_query": translated}
+        if self.shared_cache is not None:
+            self.shared_cache.set(shared_key, translated)
         logger.info("Translated query: %r -> %r", query[:60], translated[:120])
         return translated
 

@@ -33,7 +33,7 @@
         </el-menu-item>
       </el-menu>
 
-      <div class="aside-footer">FastAPI · Vue3 · Qdrant</div>
+      <div class="aside-footer">FastAPI · Vue3 · Neo4j</div>
     </el-aside>
 
     <el-main class="app-main">

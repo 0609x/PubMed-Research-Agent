@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""Search endpoints: run the ResearchAgent pipeline and persist results.
+"""Search endpoints: enqueue research jobs and return persisted results.
 
-- POST /search  runs the full pipeline (rewrite -> hybrid search -> rerank
-  -> compress -> LLM summary) and persists articles + analysis.
+- POST /search/jobs enqueues the full pipeline and returns immediately.
+- GET/POST /search/jobs/{job_id} exposes status and cancellation.
 - GET  /search/history  lists recent searches (must be declared before
   /{search_id} so "history" is not captured as an int id).
 - GET  /search/{id}  returns a stored search with its articles + analysis.
@@ -10,19 +10,19 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
+import uuid
+import datetime as dt
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import StreamingResponse
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from backend.app.core.config import settings
-from backend.app.models.analysis import Analysis
 from backend.app.models.article import Article
-from backend.app.models.database import get_db
+from backend.app.models.database import AsyncSessionLocal, get_db
 from backend.app.models.search import Search
 from backend.app.schemas.search import (
     AnalysisOut,
@@ -31,62 +31,223 @@ from backend.app.schemas.search import (
     KeywordActionIn,
     KeywordActionOut,
     SearchCreate,
+    SearchJobOut,
     SearchListOut,
     SearchOut,
 )
-from backend.services.agent_factory import build_agent
 from backend.services.search_stats import (
     build_dashboard_stats,
     load_excluded_keywords,
     save_excluded_keywords,
 )
 from backend.services.journal_metrics import JournalMetrics
+from backend.services.search_jobs import (
+    TERMINAL_STATUSES,
+    create_progress_redis,
+    job_event_payload,
+    progress_channel,
+    publish_job_event,
+)
+from backend.worker import celery_app, run_search_task
 
 router = APIRouter(prefix="/search", tags=["search"])
 logger = logging.getLogger(__name__)
 
 
-@router.post("", response_model=SearchOut, status_code=201)
+@router.post(
+    "/jobs",
+    response_model=SearchJobOut,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def create_search_job(
+    payload: SearchCreate,
+    db: AsyncSession = Depends(get_db),
+) -> SearchJobOut:
+    """Persist and enqueue a research job without holding the HTTP request."""
+    return await _enqueue_search(payload, db)
+
+
+@router.post(
+    "",
+    response_model=SearchJobOut,
+    status_code=status.HTTP_202_ACCEPTED,
+    deprecated=True,
+)
 async def create_search(
     payload: SearchCreate,
     db: AsyncSession = Depends(get_db),
-) -> SearchOut:
-    """Run the full ResearchAgent pipeline and persist the results."""
+) -> SearchJobOut:
+    """Compatibility alias for the asynchronous /search/jobs endpoint."""
+    return await _enqueue_search(payload, db)
+
+
+async def _enqueue_search(payload: SearchCreate, db: AsyncSession) -> SearchJobOut:
+    job_id = str(uuid.uuid4())
     search = Search(
+        job_id=job_id,
         query_text=payload.query,
         max_results=payload.max_results,
-        status="running",
+        language=payload.language,
+        search_mode=payload.search_mode,
+        sort_by=payload.sort_by,
+        min_year=payload.min_year,
+        max_year=payload.max_year,
+        min_impact_factor=payload.min_impact_factor,
+        status="queued",
+        progress_stage="queued",
+        progress_percent=0,
+        progress_message="任务已提交，正在等待 Worker 处理",
     )
     db.add(search)
     await db.commit()
     await db.refresh(search)
 
     try:
-        agent = await asyncio.to_thread(build_agent, settings)
-        report = await asyncio.to_thread(
-            agent.research,
-            payload.query,
-            payload.max_results,
-            payload.language,
-            payload.search_mode,
-            payload.sort_by,
-            payload.min_year,
-            payload.max_year,
-            payload.min_impact_factor,
-        )
-        await _persist_report(db, search, report)
+        run_search_task.apply_async(args=[search.id], task_id=job_id)
+        logger.info("Search job queued job_id=%s search_id=%s", job_id, search.id)
     except Exception as exc:
-        logger.exception("Search pipeline failed for query=%r", payload.query)
+        logger.exception("Unable to enqueue search job %s", job_id)
         search.status = "failed"
-        search.error_message = str(exc)[:2000]
+        search.progress_stage = "failed"
+        search.progress_percent = 100
+        search.progress_message = "后台任务服务不可用"
+        search.error_message = f"Unable to enqueue job: {exc}"[:2000]
         await db.commit()
-        await db.refresh(search)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Background job service is unavailable",
+        ) from exc
 
-    out = await _load_search_out(db, search.id)
-    # Echo request options (not persisted) so the client can render them.
-    out.search_mode = payload.search_mode
-    out.sort_by = payload.sort_by
-    return out
+    return _job_to_out(search)
+
+
+@router.get("/jobs/{job_id}", response_model=SearchJobOut)
+async def get_search_job(
+    job_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> SearchJobOut:
+    search = await _get_search_by_job_id(db, job_id)
+    return _job_to_out(search)
+
+
+@router.get("/jobs/{job_id}/events")
+async def stream_search_job_events(job_id: str) -> StreamingResponse:
+    """Stream durable job snapshots over Server-Sent Events."""
+    async with AsyncSessionLocal() as db:
+        await _get_search_by_job_id(db, job_id)
+    return StreamingResponse(
+        _job_event_stream(job_id),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+async def _job_event_stream(job_id: str):
+    async def load_snapshot() -> Search | None:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(select(Search).where(Search.job_id == job_id))
+            return result.scalar_one_or_none()
+
+    def encode(search: Search) -> str:
+        return f"data: {json.dumps(job_event_payload(search), ensure_ascii=False)}\n\n"
+
+    search = await load_snapshot()
+    if search is None:
+        return
+    yield encode(search)
+    if search.status in TERMINAL_STATUSES:
+        return
+
+    client = create_progress_redis(stream=True)
+    pubsub = client.pubsub()
+    try:
+        await pubsub.subscribe(progress_channel(job_id))
+        # Close the subscribe race by re-reading SQL after the subscription.
+        search = await load_snapshot()
+        if search is None:
+            return
+        yield encode(search)
+        if search.status in TERMINAL_STATUSES:
+            return
+
+        while True:
+            message = await pubsub.get_message(
+                ignore_subscribe_messages=True,
+                timeout=15.0,
+            )
+            if message and message.get("type") == "message":
+                payload = str(message["data"])
+                yield f"data: {payload}\n\n"
+                try:
+                    if json.loads(payload).get("status") in TERMINAL_STATUSES:
+                        return
+                except (TypeError, ValueError):
+                    logger.warning("Invalid progress event for job %s", job_id)
+            else:
+                # Heartbeats keep proxies alive; SQL snapshots also recover a
+                # Redis publication missed during a transient broker outage.
+                search = await load_snapshot()
+                if search is None:
+                    return
+                yield encode(search)
+                if search.status in TERMINAL_STATUSES:
+                    return
+                yield ": keep-alive\n\n"
+    except Exception:
+        logger.warning("SSE stream unavailable for job %s", job_id, exc_info=True)
+        return
+    finally:
+        try:
+            await pubsub.unsubscribe(progress_channel(job_id))
+        finally:
+            await pubsub.aclose()
+            await client.aclose()
+
+
+@router.post("/jobs/{job_id}/cancel", response_model=SearchJobOut)
+async def cancel_search_job(
+    job_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> SearchJobOut:
+    """Request cooperative cancellation and revoke queued delivery."""
+    now = dt.datetime.now(dt.UTC).replace(tzinfo=None)
+    cancelled = await db.execute(
+        update(Search)
+        .where(
+            Search.job_id == job_id,
+            Search.status.not_in({"completed", "partial", "failed", "cancelled"}),
+        )
+        .values(
+            cancel_requested=True,
+            status="cancelled",
+            progress_stage="cancelled",
+            progress_percent=100,
+            progress_message="任务已取消",
+            completed_at=now,
+            updated_at=now,
+        )
+    )
+    await db.commit()
+    search = await _get_search_by_job_id(db, job_id)
+    await publish_job_event(search)
+    if cancelled.rowcount == 1:
+        try:
+            celery_app.control.revoke(job_id, terminate=False)
+        except Exception:
+            logger.warning("Could not broadcast revoke for job %s", job_id, exc_info=True)
+    return _job_to_out(search)
+
+
+async def _get_search_by_job_id(db: AsyncSession, job_id: str) -> Search:
+    result = await db.execute(select(Search).where(Search.job_id == job_id))
+    search = result.scalar_one_or_none()
+    if search is None:
+        raise HTTPException(status_code=404, detail="Search job not found")
+    return search
 
 
 @router.get("/history", response_model=list[SearchListOut])
@@ -182,51 +343,6 @@ async def _load_search_out(db: AsyncSession, search_id: int) -> SearchOut:
     return _search_to_out(search)
 
 
-async def _persist_report(db: AsyncSession, search: Search, report) -> None:
-    """Store the report: search metadata, articles, and the LLM analysis."""
-    search.status = report.status
-    search.pubmed_query = report.rewritten_query
-    search.total_found = report.total_pubmed_hits
-    search.error_message = "; ".join(report.errors)[:2000]
-
-    for art in report.articles:
-        db.add(
-            Article(
-                search_id=search.id,
-                pmid=str(art.get("pmid", "")),
-                title=art.get("title", "") or "",
-                abstract=art.get("abstract", "") or "",
-                doi=art.get("doi", "") or "",
-                authors=json.dumps(art.get("authors", []), ensure_ascii=False),
-                journal=art.get("journal", "") or "",
-                publish_date=art.get("publish_date", "") or "",
-                publication_type=art.get("publication_type", "") or "",
-            )
-        )
-
-    if report.research_background or report.main_findings:
-        db.add(
-            Analysis(
-                search_id=search.id,
-                research_background=report.research_background or "",
-                current_hotspots=json.dumps(
-                    report.current_hotspots, ensure_ascii=False
-                ),
-                main_findings=json.dumps(report.main_findings, ensure_ascii=False),
-                experimental_methods=json.dumps(
-                    report.experimental_methods, ensure_ascii=False
-                ),
-                future_directions=json.dumps(
-                    report.future_directions, ensure_ascii=False
-                ),
-                model_used=report.model_used or "",
-            )
-        )
-
-    await db.commit()
-    await db.refresh(search)
-
-
 def _search_to_out(search: Search) -> SearchOut:
     """Map a Search ORM row (with relations loaded) to SearchOut."""
     articles = []
@@ -263,8 +379,15 @@ def _search_to_out(search: Search) -> SearchOut:
 
     return SearchOut(
         id=search.id,
+        job_id=search.job_id,
         query_text=search.query_text,
         pubmed_query=search.pubmed_query or "",
+        language=search.language or "en",
+        search_mode=search.search_mode or "advanced",
+        sort_by=search.sort_by or "relevance",
+        min_year=search.min_year,
+        max_year=search.max_year,
+        min_impact_factor=search.min_impact_factor,
         max_results=search.max_results,
         total_found=search.total_found,
         status=search.status,
@@ -272,6 +395,25 @@ def _search_to_out(search: Search) -> SearchOut:
         created_at=search.created_at,
         articles=articles,
         analysis=analysis,
+    )
+
+
+def _job_to_out(search: Search) -> SearchJobOut:
+    if search.job_id is None:
+        raise ValueError("Legacy search rows do not have background job IDs")
+    return SearchJobOut(
+        job_id=search.job_id,
+        search_id=search.id,
+        status=search.status,
+        progress_percent=search.progress_percent,
+        progress_stage=search.progress_stage,
+        progress_message=search.progress_message or "",
+        error_message=search.error_message or "",
+        cancel_requested=search.cancel_requested,
+        created_at=search.created_at,
+        updated_at=search.updated_at,
+        started_at=search.started_at,
+        completed_at=search.completed_at,
     )
 
 

@@ -18,6 +18,7 @@
 - [快速开始](#快速开始)
 - [API 概览](#api-概览)
 - [运行测试](#运行测试)
+- [生产部署](docs/PRODUCTION_DEPLOYMENT.md)
 - [常见问题](#常见问题)
 
 ---
@@ -30,9 +31,9 @@
 | 🧠 AI 总结 | 大模型输出研究背景、当前热点、主要发现、研究方法、未来方向 |
 | 📊 研究看板 | 检索统计、热门词趋势、期刊/年份/影响因子分布，支持关键词管理 |
 | 🕸️ 知识图谱 | 文献/作者/期刊关系入库 Neo4j，子图查询与相关文献推荐 |
-| 💬 RAG 问答 | 基于已入库文献的多轮对话，答案附带 PMID 来源引用 |
+| 💬 收藏文献 RAG 问答 | 仅基于浏览器收藏夹中的文献回答，答案附带 PMID 来源引用 |
 | 📚 文献收藏 | 收藏重要文献并导出 BibTeX，支持中英文摘要互译 |
-| ⚡ 性能优化 | Query Rewrite、Hybrid Search、Rerank、Context Compression、Prompt Cache、Memory |
+| ⚡ 性能与反馈 | 后台任务、SSE 实时进度、Redis 共享缓存与防击穿锁、Hybrid Search、Rerank |
 
 ---
 
@@ -42,33 +43,37 @@
 flowchart TB
     subgraph FE["前端层 · Vue3 + TypeScript"]
         UI["页面组件<br/>Element Plus + Pinia"]
-        API["API 客户端<br/>Vite 代理 /api → :8000"]
+        API["API 客户端<br/>SSE 实时进度 + 轮询降级"]
     end
     subgraph BE["后端层 · FastAPI"]
-        ROUTER["API 路由<br/>/search · /rag · /graph · /translate"]
+        ROUTER["API 路由<br/>/search/jobs · /rag · /graph · /translate"]
+        QUEUE["任务调度、事件与共享缓存<br/>Celery + Redis Pub/Sub/TTL Cache"]
         SVC["服务层<br/>检索 / 总结 / 排序 / 翻译 / 统计"]
     end
     subgraph AGENT["智能体层 · ResearchAgent"]
         QW["Query Rewrite<br/>中文问题 → PubMed 检索式"]
-        HS["Hybrid Search<br/>关键词 + 语义（Qdrant）"]
+        HS["Hybrid Search<br/>关键词 + 批内语义排序"]
         RR["Rerank<br/>LLM 重排序"]
         CC["Context Compression<br/>上下文压缩"]
         SM["Summarize<br/>结构化文献总结"]
     end
+    subgraph DATA["持久化层"]
+        PG["PostgreSQL<br/>任务状态与检索结果"]
+    end
     subgraph EXT["外部服务层"]
         PUB["PubMed<br/>E-utilities"]
         LLM["LLM<br/>GPT / DeepSeek / Qwen"]
-        QD["Qdrant<br/>向量存储"]
         NEO["Neo4j Aura<br/>知识图谱"]
     end
 
     UI --> API --> ROUTER
-    ROUTER --> SVC
+    ROUTER --> QUEUE --> SVC
+    ROUTER --> PG
+    SVC --> PG
     SVC --> AGENT
     QW --> HS --> RR --> CC --> SM
     AGENT --> PUB
     AGENT --> LLM
-    SVC --> QD
     SVC --> NEO
 ```
 
@@ -77,9 +82,10 @@ flowchart TB
 | 层 | 技术 | 职责 |
 |----|------|------|
 | 前端层 | Vue3 + TypeScript + Element Plus + Pinia | 页面展示、交互、状态管理；Vite 代理 `/api` 到后端 |
-| 后端层 | FastAPI + SQLAlchemy(async) | REST API、鉴权配置、数据持久化、业务编排 |
+| 后端层 | FastAPI + Celery + Redis | REST API、后台任务调度、状态查询与取消 |
+| 持久化层 | PostgreSQL + SQLAlchemy(async) | 任务状态、检索结果与分析报告的唯一数据来源 |
 | 智能体层 | ResearchAgent 管线 | 问题改写 → 混合检索 → 重排 → 压缩 → 总结 |
-| 外部服务层 | PubMed / LLM / Qdrant / Neo4j | 文献数据源、模型推理、向量库、知识图谱 |
+| 外部服务层 | PubMed / LLM / Neo4j | 文献数据源、模型推理、知识图谱 |
 
 ### 目录结构
 
@@ -96,7 +102,7 @@ PubMed-Research-Agent/
 │   └── alembic/              # 数据库迁移
 ├── frontend/                 # Vue3 前端（Vite + TS）
 │   └── src/views/            # 6 个页面视图
-├── data/                     # 运行时数据（SQLite、缓存、期刊指标表）
+├── data/                     # 本地 SQLite、会话与期刊指标表（线上缓存使用 Redis）
 ├── deploy/                   # 部署文件（Docker Compose、Dockerfile）
 ├── docs/                     # 项目文档与截图
 ├── .env.example              # 环境变量模板
@@ -118,7 +124,7 @@ PubMed-Research-Agent/
 - **排序与筛选**：相关度、发表时间（升/降序）；按年份区间、影响因子阈值过滤
 - **结果列表**：标题、摘要、PMID、DOI、作者、期刊、发表日期
 - **AI 总结**：研究背景 / 当前研究热点 / 主要发现 / 实验验证方法 / 未来研究方向
-- **交互**：单篇翻译、收藏文献、复制结果
+- **交互**：分阶段实时进度、任务取消、断线自动降级轮询、单篇翻译、收藏文献、复制结果
 
 ![文献检索页](docs/screenshots/search.png)
 
@@ -126,7 +132,8 @@ PubMed-Research-Agent/
 
 ### 2. AI 问答（`/chat`）
 
-基于已入库文献的 RAG 对话，支持中英文回答，答案附带 PMID 来源引用，可多轮追问。
+基于个人收藏文献的本地检索增强问答，支持中英文回答，答案附带 PMID 来源引用。收藏夹
+保存在浏览器本地，提问时仅发送选出的收藏文献内容作为回答证据。
 
 ![RAG 问答页](docs/screenshots/chat.png)
 
@@ -141,8 +148,10 @@ PubMed-Research-Agent/
 文献-作者-期刊关系图谱：
 
 - **图谱状态**：显示 Neo4j 连接是否就绪
-- **可视化**：交互式图谱画布，节点与关系可视化
-- **查询**：子图查询、相关文献推荐（以 PMID 关联）
+- **可视化导航**：单击文献节点即可设为新的探索中心，URL 可分享并支持浏览器前进/后退
+- **关联解释**：明确展示共同作者、同一期刊及共现数量，不只给出黑盒推荐
+- **科研闭环**：查看摘要和作者、打开 PubMed，并将图谱发现一键收藏到个人 RAG 文献库
+- **快速入口**：直接列出最近进入图谱的文献，无需预先记住 PMID
 
 ![知识图谱页](docs/screenshots/graph.png)
 
@@ -170,7 +179,7 @@ PubMed-Research-Agent/
 - Python 3.11+（推荐 3.13）
 - Node.js 18+（推荐 22）
 - 一个 OpenAI 兼容的 LLM API（DeepSeek / Qwen / GPT 均可）
-- （可选）Qdrant 云实例、Neo4j Aura 实例
+- （可选）Neo4j Aura 实例，用于知识图谱
 
 ### 1. 配置环境变量
 
@@ -188,8 +197,11 @@ cp .env.example .env
 | `NEO4J_URI` / `NEO4J_USERNAME` / `NEO4J_PASSWORD` | 可选 | 知识图谱 |
 | `EMBED_API_KEY` / `EMBED_MODEL_NAME` | 可选 | DashScope 嵌入模型（向量化） |
 | `PUBMED_API_KEY` | 可选 | NCBI Key，提升检索限流（10 次/秒） |
+| `REDIS_URL` | 本地开发必填 | Celery 消息队列，例如 `redis://localhost:6379/0` |
+| `PROMPT_CACHE_REDIS_URL` | 线上必填 | 跨 Worker 共享的 LLM/查询缓存，建议使用独立 Redis DB |
+| `PROMPT_CACHE_TTL_HOURS` | 可选 | 共享缓存有效期，默认 24 小时 |
 
-### 2. 启动后端
+### 2. 启动本地开发环境
 
 ```bash
 # 创建虚拟环境（首次）
@@ -200,11 +212,34 @@ python -m venv .venv
 # 安装依赖
 pip install -r requirements.txt
 
-# 启动后端（在项目根目录）
+# 初始化或升级数据库
+alembic upgrade head
+
+# 终端 1：启动后端（在项目根目录）
 uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --reload
+
+# 终端 2：启动 Worker（Windows 本地使用 solo 池）
+celery -A backend.worker:celery_app worker --loglevel=INFO --pool=solo
+```
+
+启动上述命令前需有一个可用的 Redis；本地可以运行
+`docker run --rm -p 6379:6379 redis:7-alpine`。开发环境可继续使用 SQLite，
+线上部署统一使用 PostgreSQL。
+
+如果已有旧版 SQLite 数据库且尚未使用 Alembic，请先备份数据库，然后执行：
+
+```bash
+alembic stamp 0001_initial
+alembic upgrade head
 ```
 
 后端启动后访问 http://localhost:8000/docs 查看 Swagger 文档。
+
+检索采用后台任务接口：`POST /api/v1/search/jobs` 创建任务，
+`GET /api/v1/search/jobs/{job_id}` 查询状态，
+`GET /api/v1/search/jobs/{job_id}/events` 订阅 SSE 实时进度，
+`POST /api/v1/search/jobs/{job_id}/cancel` 请求取消。长时间的 PubMed/LLM
+处理在 Worker 内执行，不会占住 API 请求；SSE 断线时前端自动切换为状态轮询。
 
 ### 3. 启动前端
 
@@ -223,9 +258,15 @@ npm run dev
 docker compose -f deploy/docker-compose.yml up -d --build
 ```
 
+部署前请在根目录 `.env` 或主机环境中设置强随机的 `POSTGRES_PASSWORD`；
+若密码含 URL 特殊字符，请设置完整且已编码的 `POSTGRES_DATABASE_URL`。
+Compose 会同时启动 PostgreSQL、Redis、FastAPI、Celery Worker 与前端。
+完整的生产配置、健康检查、扩容、备份和安全边界见
+[生产部署与验收](docs/PRODUCTION_DEPLOYMENT.md)。
+
 - 后端：http://localhost:8000
 - 前端：http://localhost:8080
-- `data/` 目录通过卷挂载持久化（SQLite、缓存、会话）
+- PostgreSQL 与 Redis 使用命名卷持久化；提示词与查询缓存位于 Redis DB 1，`data/` 不再承担线上缓存共享
 
 ---
 
@@ -234,13 +275,21 @@ docker compose -f deploy/docker-compose.yml up -d --build
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/api/v1/health` | 健康检查 |
-| POST | `/api/v1/search` | 文献检索（关键词 / 高级） |
+| GET | `/api/v1/health/live` | API 进程存活检查 |
+| GET | `/api/v1/health/ready` | PostgreSQL 与 Redis 就绪检查 |
+| POST | `/api/v1/search/jobs` | 创建后台文献检索任务（返回 202） |
+| GET | `/api/v1/search/jobs/{job_id}` | 查询任务状态 |
+| GET | `/api/v1/search/jobs/{job_id}/events` | 订阅 SSE 实时进度事件 |
+| POST | `/api/v1/search/jobs/{job_id}/cancel` | 取消排队或运行中的任务 |
+| GET | `/api/v1/search/{search_id}` | 获取已持久化的检索结果 |
 | GET | `/api/v1/search/stats` | 研究看板统计 |
 | POST | `/api/v1/search/keywords/action` | 热门检索词管理 |
 | POST | `/api/v1/rag/query` | RAG 问答 |
 | GET | `/api/v1/graph/stats` | 知识图谱状态 |
-| GET | `/api/v1/graph/subgraph` | 子图查询 |
-| GET | `/api/v1/graph/related` | 相关文献 |
+| GET | `/api/v1/graph/papers` | 最近进入图谱的文献 |
+| GET | `/api/v1/graph/paper/{pmid}` | 图谱论文详情 |
+| GET | `/api/v1/graph/subgraph/{pmid}` | 子图查询 |
+| GET | `/api/v1/graph/related/{pmid}` | 带关联依据的相关文献 |
 | POST | `/api/v1/translate` | 摘要翻译 |
 
 ---
@@ -266,8 +315,8 @@ npm run build        # vue-tsc + vite build
 **Q：检索提示 PubMed 限流？**
 在 `.env` 配置 `PUBMED_API_KEY`（NCBI 免费申请），速率提升至 10 次/秒。
 
-**Q：Neo4j / Qdrant 报认证失败？**
-确认 `.env` 中的地址、用户名、密码与云端控制台一致；新建实例后通常等待 1 分钟左右才能连接。
+**Q：Neo4j 报认证失败？**
+确认 `.env` 中的地址、用户名、密码和数据库名与 Aura 控制台一致；新建实例后通常等待 1 分钟左右才能连接。
 
-**Q：不想使用知识图谱 / 向量库？**
-在 `.env` 设置 `NEO4J_ENABLED=false` / `VECTOR_STORE_ENABLED=false` 关闭对应功能。
+**Q：不想使用知识图谱？**
+在 `.env` 设置 `NEO4J_ENABLED=false` 关闭该功能。

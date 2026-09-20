@@ -1,5 +1,5 @@
 ﻿# -*- coding: utf-8 -*-
-"""RAG chat endpoints: ask questions over the Qdrant-indexed corpus."""
+"""RAG chat endpoints grounded in the user's browser-saved literature."""
 
 from __future__ import annotations
 
@@ -11,11 +11,7 @@ from fastapi import APIRouter, HTTPException
 
 from backend.app.core.config import settings
 from backend.app.schemas.rag import RagQueryIn, RagQueryOut
-from backend.services.agent_factory import (
-    build_embedding_client,
-    build_summarizer,
-    build_vector_store,
-)
+from backend.services.agent_factory import build_summarizer
 from backend.services.rag_service import RagService
 
 router = APIRouter(prefix="/rag", tags=["rag"])
@@ -29,21 +25,20 @@ def get_rag_service() -> RagService:
     global _service
     if _service is None:
         summarizer = build_summarizer(settings)
-        embed = build_embedding_client(settings)
-        store = build_vector_store(settings, embed)
-        _service = RagService(vector_store=store, llm=summarizer)
-        logger.info("RAG service built (qdrant=%s)", bool(store))
+        _service = RagService(llm=summarizer)
+        logger.info("Favorite-library RAG service built")
     return _service
 
 
 @router.post("/query", response_model=RagQueryOut)
 async def rag_query(payload: RagQueryIn) -> RagQueryOut:
-    """Answer a question grounded in the Qdrant-indexed literature."""
+    """Answer a question using only the articles supplied from favorites."""
     try:
         service = get_rag_service()
         return await asyncio.to_thread(
             service.answer,
             payload.query,
+            payload.documents,
             payload.top_k,
             payload.language,
         )

@@ -29,12 +29,3 @@ async def get_db():
     """FastAPI dependency that yields an async DB session."""
     async with AsyncSessionLocal() as session:
         yield session
-
-
-async def init_db() -> None:
-    """Create all tables. Use Alembic for schema migrations in production."""
-    # Import models so they register on Base.metadata
-    from backend.app.models import analysis, article, search  # noqa: F401
-
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)

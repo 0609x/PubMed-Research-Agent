@@ -65,10 +65,15 @@ export interface SearchAnalysis {
 
 export interface SearchOut {
   id: number
+  job_id?: string | null
   query_text: string
   pubmed_query: string
-  search_mode: string
-  sort_by: string
+  language: Language
+  search_mode: SearchMode
+  sort_by: SortBy
+  min_year: number | null
+  max_year: number | null
+  min_impact_factor: number | null
   max_results: number
   total_found: number
   status: string
@@ -76,6 +81,21 @@ export interface SearchOut {
   created_at: string
   articles: Article[]
   analysis: SearchAnalysis | null
+}
+
+export interface SearchJob {
+  job_id: string
+  search_id: number
+  status: string
+  progress_percent: number
+  progress_stage: string
+  progress_message: string
+  error_message: string
+  cancel_requested: boolean
+  created_at: string
+  updated_at: string
+  started_at: string | null
+  completed_at: string | null
 }
 
 export interface SearchListItem {
@@ -90,6 +110,15 @@ export interface RagQueryIn {
   query: string
   top_k: number
   language: Language
+  documents: RagDocumentIn[]
+}
+
+export interface RagDocumentIn {
+  pmid: string
+  title: string
+  abstract: string
+  journal: string
+  publish_date: string
 }
 
 export interface RagSource {
@@ -132,6 +161,8 @@ export interface RelatedPaper {
   pmid: string
   title: string
   overlap: number
+  shared_authors: string[]
+  shared_journals: string[]
 }
 
 export interface RelatedPapersOut {
@@ -202,6 +233,27 @@ export interface GraphSubgraph {
   pmid: string
   nodes: GraphNode[]
   links: GraphLink[]
+}
+
+export interface GraphPaper {
+  pmid: string
+  title: string
+  abstract: string
+  doi: string
+  authors: string[]
+  journal: string
+  publish_date: string
+}
+
+export interface GraphPaperSummary {
+  pmid: string
+  title: string
+  journal: string
+  publish_date: string
+}
+
+export interface GraphPapersOut {
+  papers: GraphPaperSummary[]
 }
 
 export interface KeywordActionOut {

@@ -25,7 +25,6 @@ from backend.services.memory import ConversationMemory
 from backend.services.neo4j_store import Neo4jGraphStore
 from backend.services.prompt_cache import PromptCache
 from backend.services.reranker import LLMReranker
-from backend.services.vector_store import QdrantVectorStore
 from backend.tools.pubmed_tool import PubMedSearchTool
 
 logger = logging.getLogger(__name__)
@@ -63,37 +62,6 @@ def build_embedding_client(settings) -> EmbeddingClient:
     )
 
 
-def build_vector_store(
-    settings,
-    embed_client: EmbeddingClient,
-) -> Optional[QdrantVectorStore]:
-    """Create the Qdrant vector store when configured and enabled.
-
-    Returns None when Qdrant is disabled or its credentials are missing so
-    callers can degrade to in-batch embedding / keyword-only search.
-    """
-    if not settings.vector_store_enabled:
-        logger.info("Vector store disabled by settings; skipping Qdrant")
-        return None
-    if not settings.qdrant_url or not settings.qdrant_api_key:
-        logger.warning(
-            "Qdrant URL/API key not configured; using in-batch embedding"
-        )
-        return None
-    try:
-        return QdrantVectorStore(
-            url=settings.qdrant_url,
-            api_key=settings.qdrant_api_key,
-            collection_name=settings.qdrant_collection_name,
-            embedding_client=embed_client,
-        )
-    except Exception as exc:
-        logger.warning("Qdrant store initialization failed: %s", exc)
-        return None
-
-
-
-
 def build_graph_store(settings) -> Optional[Neo4jGraphStore]:
     """Create the Neo4j graph store when configured and enabled."""
     if not settings.neo4j_enabled:
@@ -114,35 +82,50 @@ def build_graph_store(settings) -> Optional[Neo4jGraphStore]:
         return None
 
 
+def build_prompt_cache(settings) -> PromptCache:
+    """Build the shared production cache or explicit offline disk backend."""
+    backend = settings.prompt_cache_backend.strip().lower()
+    if backend not in {"redis", "disk"}:
+        raise ValueError("PROMPT_CACHE_BACKEND must be 'redis' or 'disk'")
+    return PromptCache(
+        cache_dir="./data/cache",
+        redis_url=settings.prompt_cache_redis_url if backend == "redis" else None,
+        ttl_hours=settings.prompt_cache_ttl_hours,
+        namespace=settings.prompt_cache_namespace,
+        socket_connect_timeout=settings.redis_socket_connect_timeout,
+        socket_timeout=settings.redis_socket_timeout,
+        lock_timeout=settings.prompt_cache_lock_timeout,
+        lock_wait_timeout=settings.prompt_cache_lock_wait_timeout,
+    )
+
+
 def build_agent(settings) -> ResearchAgent:
     """Assemble the complete ResearchAgent with all optional components."""
     pubmed = build_pubmed_tool(settings)
     summarizer = build_summarizer(settings)
     embed = build_embedding_client(settings)
-    vector_store = build_vector_store(settings, embed)
     graph_store = build_graph_store(settings)
+    prompt_cache = build_prompt_cache(settings)
 
     hybrid = HybridSearcher(
         pubmed_tool=pubmed,
         embed_client=embed,
-        vector_store=vector_store,
     )
 
     agent = ResearchAgent(
         pubmed=pubmed,
         summarizer=summarizer,
-        rewriter=QueryRewriter(llm=summarizer),
+        rewriter=QueryRewriter(llm=summarizer, cache=prompt_cache),
         hybrid_searcher=hybrid,
         reranker=LLMReranker(llm=summarizer, strategy="pointwise"),
         compressor=ContextCompressor(strategy="hybrid", llm=summarizer),
-        cache=PromptCache(cache_dir="./data/cache"),
+        cache=prompt_cache,
         memory=ConversationMemory(session_dir="./data/sessions"),
         graph_store=graph_store,
     )
     logger.info(
-        "Agent assembled: model=%s, qdrant=%s, neo4j=%s",
+        "Agent assembled: model=%s, neo4j=%s",
         summarizer.model,
-        bool(vector_store),
         bool(graph_store),
     )
     return agent

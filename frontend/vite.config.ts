@@ -11,6 +11,21 @@ export default defineConfig({
       '@': fileURLToPath(new URL('./src', import.meta.url))
     }
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return
+          if (id.includes('@element-plus/icons-vue')) return 'element-icons'
+          if (id.includes('element-plus')) return 'element-plus'
+          if (id.includes('dompurify') || id.includes('marked')) return 'markdown'
+          if (id.includes('/vue/') || id.includes('vue-router') || id.includes('pinia')) {
+            return 'vue-vendor'
+          }
+        }
+      }
+    }
+  },
   server: {
     host: '0.0.0.0',
     port: 5173,

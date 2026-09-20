@@ -14,7 +14,13 @@ class FakeGraphStore:
         self._ready = ready
         self._stats = stats or {"papers": 4, "authors": 6, "journals": 3}
         self._related = related or [
-            {"pmid": "200", "title": "Other paper", "overlap": 2}
+            {
+                "pmid": "200",
+                "title": "Other paper",
+                "overlap": 2,
+                "shared_authors": ["Wang Li"],
+                "shared_journals": ["Cancer Res"],
+            }
         ]
         self._error = error
 
@@ -51,6 +57,33 @@ class FakeGraphStore:
             ],
         }
 
+    def paper_details(self, pmid):
+        if self._error:
+            raise RuntimeError("boom")
+        if pmid == "missing":
+            return None
+        return {
+            "pmid": pmid,
+            "title": "Center",
+            "abstract": "Evidence",
+            "doi": "10.1/test",
+            "authors": ["Wang Li"],
+            "journal": "Cancer Res",
+            "publish_date": "2025",
+        }
+
+    def list_papers(self, limit):
+        if self._error:
+            raise RuntimeError("boom")
+        return [
+            {
+                "pmid": "100",
+                "title": "Center",
+                "journal": "Cancer Res",
+                "publish_date": "2025",
+            }
+        ]
+
 
 def test_stats_returns_counts(monkeypatch):
     monkeypatch.setattr("backend.app.api.v1.graph.get_graph_store", lambda: FakeGraphStore())
@@ -82,6 +115,7 @@ def test_related_papers_returns_rows(monkeypatch):
     assert body["pmid"] == "100"
     assert body["related"][0]["pmid"] == "200"
     assert body["related"][0]["overlap"] == 2
+    assert body["related"][0]["shared_authors"] == ["Wang Li"]
 
 
 def test_related_papers_when_store_unconfigured(monkeypatch):
@@ -107,3 +141,26 @@ def test_subgraph_when_store_unconfigured(monkeypatch):
     with TestClient(app) as client:
         resp = client.get("/api/v1/graph/subgraph/100")
     assert resp.status_code == 503
+
+
+def test_graph_paper_returns_details(monkeypatch):
+    monkeypatch.setattr("backend.app.api.v1.graph.get_graph_store", lambda: FakeGraphStore())
+    with TestClient(app) as client:
+        resp = client.get("/api/v1/graph/paper/100")
+    assert resp.status_code == 200
+    assert resp.json()["authors"] == ["Wang Li"]
+
+
+def test_graph_paper_returns_404(monkeypatch):
+    monkeypatch.setattr("backend.app.api.v1.graph.get_graph_store", lambda: FakeGraphStore())
+    with TestClient(app) as client:
+        resp = client.get("/api/v1/graph/paper/missing")
+    assert resp.status_code == 404
+
+
+def test_graph_papers_lists_entry_points(monkeypatch):
+    monkeypatch.setattr("backend.app.api.v1.graph.get_graph_store", lambda: FakeGraphStore())
+    with TestClient(app) as client:
+        resp = client.get("/api/v1/graph/papers?limit=10")
+    assert resp.status_code == 200
+    assert resp.json()["papers"][0]["pmid"] == "100"

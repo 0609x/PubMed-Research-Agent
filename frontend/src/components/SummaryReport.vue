@@ -163,22 +163,26 @@ const reportMarkdown = computed(() => {
   margin-bottom: 12px;
 }
 .section-title {
+  font-size: 17px;
   font-weight: 600;
 }
 .markdown-body {
+  color: var(--el-text-color-primary);
+  font-size: 16px;
   line-height: 1.8;
 }
 .hotspot-card {
   margin-bottom: 12px;
 }
 .hotspot-name {
+  font-size: 16px;
   font-weight: 600;
   margin-bottom: 6px;
 }
 .hotspot-desc {
   color: var(--el-text-color-regular);
-  font-size: 13px;
-  line-height: 1.7;
+  font-size: 15px;
+  line-height: 1.8;
   margin-bottom: 8px;
 }
 .hotspot-evidence {
@@ -189,6 +193,7 @@ const reportMarkdown = computed(() => {
 .finding-list {
   margin: 0;
   padding-left: 20px;
+  font-size: 15px;
   line-height: 1.9;
 }
 .pmid-tag {
@@ -198,12 +203,21 @@ const reportMarkdown = computed(() => {
   margin-bottom: 12px;
 }
 .direction-topic {
+  font-size: 16px;
   font-weight: 600;
   margin-bottom: 4px;
 }
 .direction-rationale {
-  color: var(--el-text-color-secondary);
-  font-size: 13px;
-  line-height: 1.6;
+  color: var(--el-text-color-regular);
+  font-size: 15px;
+  line-height: 1.8;
+}
+:deep(.el-table) {
+  font-size: 15px;
+}
+:deep(.el-table .cell) {
+  line-height: 1.7;
+  padding-top: 5px;
+  padding-bottom: 5px;
 }
 </style>

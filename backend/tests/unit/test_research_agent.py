@@ -143,6 +143,30 @@ class TestResearchReport:
 # ---------------------------------------------------------------------------
 
 class TestResearchAgent:
+    def test_reports_monotonic_pipeline_progress(self, agent):
+        events = []
+
+        report = agent.research(
+            "SEC61G in Lung Cancer",
+            progress_callback=lambda stage, percent, message: events.append(
+                (stage, percent, message)
+            ),
+        )
+
+        assert report.status == "completed"
+        assert [event[0] for event in events] == [
+            "preparing_query",
+            "searching",
+            "filtering",
+            "indexing_graph",
+            "reranking",
+            "compressing",
+            "summarizing",
+            "finalizing",
+        ]
+        assert [event[1] for event in events] == sorted(event[1] for event in events)
+        assert all(event[2] for event in events)
+
     def test_happy_path(self, agent):
         report = agent.research("SEC61G in Lung Cancer")
 
@@ -290,7 +314,7 @@ class TestOptionalComponents:
 
     def test_hybrid_failure_falls_back_to_keyword(self, mock_pubmed, mock_summarizer):
         mock_hybrid = MagicMock()
-        mock_hybrid.search.side_effect = RuntimeError("qdrant down")
+        mock_hybrid.search.side_effect = RuntimeError("semantic search unavailable")
         agent = ResearchAgent(
             pubmed=mock_pubmed,
             summarizer=mock_summarizer,
@@ -313,6 +337,22 @@ class TestOptionalComponents:
         report = agent.research("query")
         mock_rerank.rerank.assert_called_once()
         assert report.total_pubmed_hits == 5
+
+    def test_reranker_respects_requested_result_count(self, mock_pubmed, mock_summarizer):
+        mock_pubmed.search.return_value = make_search_result("query", n=20)
+        mock_rerank = MagicMock()
+        mock_rerank.rerank.side_effect = lambda q, arts, top_k=10: arts[:top_k]
+        agent = ResearchAgent(
+            pubmed=mock_pubmed,
+            summarizer=mock_summarizer,
+            reranker=mock_rerank,
+        )
+
+        report = agent.research("query", max_results=20)
+
+        mock_rerank.rerank.assert_called_once()
+        assert mock_rerank.rerank.call_args.kwargs["top_k"] == 20
+        assert len(report.articles) == 20
 
     def test_reranker_failure_falls_back_to_fast(self, mock_pubmed, mock_summarizer):
         mock_rerank = MagicMock()

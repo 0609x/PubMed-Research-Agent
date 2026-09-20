@@ -10,6 +10,10 @@ python-multipart>=0.0.12
 sqlalchemy>=2.0.36
 alembic>=1.14.0
 aiosqlite>=0.20.0
+asyncpg>=0.30.0
+
+# --- Background Jobs ---
+celery[redis]>=5.4.0
 
 # --- Validation & Config ---
 pydantic>=2.10.0
@@ -20,7 +24,6 @@ python-dotenv>=1.0.1
 biopython>=1.84
 
 # --- Vector Store / RAG ---
-qdrant-client>=1.12.0
 
 # --- Knowledge Graph ---
 neo4j>=5.20.0

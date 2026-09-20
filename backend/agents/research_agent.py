@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 from pydantic import BaseModel, Field
 
@@ -123,7 +123,7 @@ class ResearchAgent:
 
     Workflow (with all optional components enabled):
         0. Query Rewrite     - natural language -> PubMed syntax
-        1. Hybrid Search     - keyword + semantic (Qdrant) -> RRF fusion
+        1. Hybrid Search     - keyword + in-batch semantic ranking -> RRF fusion
         2. Rerank            - LLM pointwise/listwise scoring
         3. Compress          - token reduction before LLM summary
         4. Summarize         - 5-dimension structured analysis
@@ -219,6 +219,7 @@ class ResearchAgent:
         min_year: Optional[int] = None,
         max_year: Optional[int] = None,
         min_impact_factor: Optional[float] = None,
+        progress_callback: Optional[Callable[[str, int, str], None]] = None,
     ) -> ResearchReport:
         """Execute the full research workflow.
 
@@ -241,6 +242,9 @@ class ResearchAgent:
         min_impact_factor : float, optional
             Keep only articles from journals with a known impact factor
             at or above this value.
+        progress_callback : callable, optional
+            Receives ``(stage, percent, message)`` after each stable pipeline
+            boundary. Callback failures never interrupt the research flow.
 
         Returns
         -------
@@ -267,7 +271,16 @@ class ResearchAgent:
             sort_by=sort_key,
         )
 
+        def emit(stage: str, percent: int, message: str) -> None:
+            if progress_callback is None:
+                return
+            try:
+                progress_callback(stage, percent, message)
+            except Exception:
+                logger.warning("Progress callback failed at stage=%s", stage, exc_info=True)
+
         # --- Step 0: Query Prep (translate -> keyword / advanced rewrite) ---
+        emit("preparing_query", 10, "正在翻译并优化检索问题")
         english_query = self._safe_translate(query, report)
         if mode == "keyword":
             search_query = english_query
@@ -277,6 +290,7 @@ class ResearchAgent:
         report.rewritten_query = search_query
 
         # --- Step 1: Search (hybrid in advanced mode, keyword-only in keyword mode) ---
+        emit("searching", 25, "正在检索 PubMed 与向量文献库")
         logger.info("[Step 1/4] Searching PubMed... query=%r", search_query[:100])
         search_result = self._safe_search(
             search_query,
@@ -286,6 +300,7 @@ class ResearchAgent:
         )
 
         if not search_result or not search_result.articles:
+            emit("finalizing", 95, "未检索到符合条件的文献，正在整理结果")
             if report.status != "failed":
                 report.status = "completed"
             report.elapsed_seconds = round(time.perf_counter() - start_time, 3)
@@ -299,6 +314,7 @@ class ResearchAgent:
         report.total_pubmed_hits = search_result.total_count
 
         # --- Step 1.5: Apply user filters (year / impact factor) ---
+        emit("filtering", 45, "正在按年份与影响因子筛选文献")
         kept, dropped = filter_articles(
             search_result.articles,
             min_year=min_year,
@@ -311,6 +327,7 @@ class ResearchAgent:
             logger.info(msg)
             report.errors.append(msg)
         if not kept:
+            emit("finalizing", 95, "筛选后没有保留文献，正在整理结果")
             report.status = "completed"
             report.elapsed_seconds = round(time.perf_counter() - start_time, 3)
             logger.warning("All articles filtered out for query=%r", query)
@@ -319,10 +336,12 @@ class ResearchAgent:
         report.articles = [art.to_dict() for art in kept]
 
         # --- Step 2: Knowledge graph (optional) ---
+        emit("indexing_graph", 55, "正在更新文献知识图谱")
         self._safe_graph_store(report.articles, report)
 
         # --- Step 3: Rerank (optional) ---
-        articles = self._safe_rerank(query, kept, report)
+        emit("reranking", 65, "正在评估文献相关性并重新排序")
+        articles = self._safe_rerank(query, kept, report, top_k=max_n)
 
         # --- Step 3.5: Sort (date / relevance) ---
         articles = sort_articles(articles, sort_key)
@@ -330,10 +349,12 @@ class ResearchAgent:
         report.articles = [art.to_dict() for art in articles]
 
         # --- Step 4: Compress (optional) ---
+        emit("compressing", 75, "正在压缩文献上下文")
         article_dicts = [art.to_dict() for art in articles]
         article_dicts = self._safe_compress(article_dicts, query, report)
 
         # --- Step 4: LLM Summary (with cache) ---
+        emit("summarizing", 85, "正在生成结构化研究综述")
         summary = self._safe_summarize(article_dicts, lang, report)
 
         if summary:
@@ -351,6 +372,7 @@ class ResearchAgent:
                 logger.warning("Memory add_turn failed: %s", exc)
 
         # --- Finalize ---
+        emit("finalizing", 95, "正在保存检索结果与分析报告")
         report.elapsed_seconds = round(time.perf_counter() - start_time, 3)
         logger.info(
             "Research completed: status=%s, articles=%d, %.2fs",

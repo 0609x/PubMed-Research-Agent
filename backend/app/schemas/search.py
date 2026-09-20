@@ -53,10 +53,15 @@ class AnalysisOut(BaseModel):
 
 class SearchOut(BaseModel):
     id: int
+    job_id: Optional[str] = None
     query_text: str
     pubmed_query: str = ""
+    language: str = "en"
     search_mode: str = "advanced"
     sort_by: str = "relevance"
+    min_year: Optional[int] = None
+    max_year: Optional[int] = None
+    min_impact_factor: Optional[float] = None
     max_results: int = 20
     total_found: int = 0
     status: str
@@ -64,6 +69,21 @@ class SearchOut(BaseModel):
     created_at: dt.datetime
     articles: list[ArticleOut] = Field(default_factory=list)
     analysis: Optional[AnalysisOut] = None
+
+
+class SearchJobOut(BaseModel):
+    job_id: str
+    search_id: int
+    status: str
+    progress_percent: int = 0
+    progress_stage: str = "queued"
+    progress_message: str = ""
+    error_message: str = ""
+    cancel_requested: bool = False
+    created_at: dt.datetime
+    updated_at: dt.datetime
+    started_at: Optional[dt.datetime] = None
+    completed_at: Optional[dt.datetime] = None
 
 
 class SearchListOut(BaseModel):

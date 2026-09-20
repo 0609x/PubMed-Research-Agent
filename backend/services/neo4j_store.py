@@ -80,6 +80,7 @@ class Neo4jGraphStore:
         self.password = password
         self.database = database
         self._driver: Any = None
+        self._schema_ready = False
         logger.info(
             "Neo4jGraphStore configured (uri=%s, database=%s)",
             uri,
@@ -157,6 +158,27 @@ class Neo4jGraphStore:
     # Write path
     # ------------------------------------------------------------------
 
+    def ensure_schema(self) -> None:
+        """Create uniqueness constraints once so repeated indexing stays fast and clean."""
+        if self._schema_ready:
+            return
+        statements = [
+            "CREATE CONSTRAINT paper_pmid_unique IF NOT EXISTS "
+            "FOR (p:Paper) REQUIRE p.pmid IS UNIQUE",
+            "CREATE CONSTRAINT author_name_unique IF NOT EXISTS "
+            "FOR (a:Author) REQUIRE a.name IS UNIQUE",
+            "CREATE CONSTRAINT journal_name_unique IF NOT EXISTS "
+            "FOR (j:Journal) REQUIRE j.name IS UNIQUE",
+        ]
+        try:
+            with self.driver.session(database=self.database) as session:
+                for statement in statements:
+                    session.run(statement)
+            self._schema_ready = True
+        except Exception as exc:
+            # Indexing can still work without DDL privileges, so do not make this fatal.
+            logger.warning("Neo4j schema initialization skipped: %s", exc)
+
     def upsert_articles(self, articles: list[Any]) -> int:
         """Index articles into the graph (papers, authors, journals).
 
@@ -166,6 +188,7 @@ class Neo4jGraphStore:
         if not articles:
             return 0
         try:
+            self.ensure_schema()
             with self.driver.session(database=self.database) as session:
                 for article in articles:
                     payload = self._payload(article)
@@ -183,7 +206,7 @@ class Neo4jGraphStore:
     def _upsert_paper_tx(tx: Any, payload: dict[str, Any]) -> None:
         """Transactional Cypher: MERGE paper + authors + journal."""
         authors = payload.get("authors", []) or []
-        author_names = [a.get("name") or a.get("last_name") for a in authors]
+        author_names = [Neo4jGraphStore._author_name(author) for author in authors]
         author_names = [n for n in author_names if n]
 
         tx.run(
@@ -193,7 +216,8 @@ class Neo4jGraphStore:
                 p.abstract = $abstract,
                 p.journal = $journal,
                 p.year = $year,
-                p.doi = $doi
+                p.doi = $doi,
+                p.updated_at = datetime()
             """,
             pmid=payload["pmid"],
             title=payload.get("title", "") or "",
@@ -244,10 +268,15 @@ class Neo4jGraphStore:
             MATCH (p:Paper {pmid: $pmid})-[:AUTHORED|PUBLISHED_IN]-(shared)
                   -[:AUTHORED|PUBLISHED_IN]-(other:Paper)
             WHERE other.pmid <> $pmid
-            WITH other, count(*) AS overlap
+            WITH other,
+                 count(DISTINCT shared) AS overlap,
+                 collect(DISTINCT CASE WHEN shared:Author THEN shared.name END) AS shared_authors,
+                 collect(DISTINCT CASE WHEN shared:Journal THEN shared.name END) AS shared_journals
             RETURN other.pmid AS pmid,
                    other.title AS title,
-                   overlap
+                   overlap,
+                   shared_authors,
+                   shared_journals
             ORDER BY overlap DESC, other.pmid
             LIMIT $limit
         """
@@ -259,6 +288,8 @@ class Neo4jGraphStore:
                         "pmid": record["pmid"],
                         "title": record["title"] or "",
                         "overlap": int(record["overlap"]),
+                        "shared_authors": list(record.get("shared_authors", []) or []),
+                        "shared_journals": list(record.get("shared_journals", []) or []),
                     }
                     for record in result
                 ]
@@ -328,31 +359,103 @@ class Neo4jGraphStore:
                         other_pmid,
                     )
                     add_link(f"paper:{pmid}", f"paper:{other_pmid}", "RELATED")
-                    shared = session.run(
-                        """
-                        MATCH (p:Paper {pmid: $pmid})-[:AUTHORED|PUBLISHED_IN]-(shared)
-                              -[:AUTHORED|PUBLISHED_IN]-(other:Paper {pmid: $other})
-                        RETURN labels(shared)[0] AS stype, shared.name AS sname
-                        """,
-                        pmid=pmid,
-                        other=other_pmid,
-                    )
-                    for row_shared in shared:
-                        stype = row_shared["stype"]
-                        sname = row_shared["sname"]
-                        shared_id = f"{str(stype).lower()}:{sname}"
+                    for name in row.get("shared_authors", []):
+                        shared_id = f"author:{name}"
                         if shared_id in nodes:
-                            link_type = "AUTHORED" if stype == "Author" else "PUBLISHED_IN"
-                            add_link(shared_id, f"paper:{other_pmid}", link_type)
+                            add_link(shared_id, f"paper:{other_pmid}", "AUTHORED")
+                    for name in row.get("shared_journals", []):
+                        shared_id = f"journal:{name}"
+                        if shared_id in nodes:
+                            add_link(shared_id, f"paper:{other_pmid}", "PUBLISHED_IN")
         except Exception as exc:
             logger.warning("Neo4j subgraph failed: %s", exc)
             raise Neo4jStoreError(f"Neo4j subgraph failed: {exc}") from exc
 
         return {"pmid": pmid, "nodes": list(nodes.values()), "links": links}
 
+    def paper_details(self, pmid: str) -> Optional[dict[str, Any]]:
+        """Return reusable paper metadata for graph inspection and favorites."""
+        if not pmid:
+            return None
+        cypher = """
+            MATCH (p:Paper {pmid: $pmid})
+            OPTIONAL MATCH (a:Author)-[:AUTHORED]->(p)
+            OPTIONAL MATCH (p)-[:PUBLISHED_IN]->(j:Journal)
+            WITH p,
+                 collect(DISTINCT a.name) AS authors,
+                 collect(DISTINCT j.name) AS journals
+            RETURN p.pmid AS pmid,
+                   p.title AS title,
+                   p.abstract AS abstract,
+                   p.doi AS doi,
+                   p.year AS year,
+                   coalesce(head(journals), p.journal, '') AS journal,
+                   authors
+        """
+        try:
+            with self.driver.session(database=self.database) as session:
+                record = session.run(cypher, pmid=pmid).single()
+            if record is None:
+                return None
+            return {
+                "pmid": str(record["pmid"] or pmid),
+                "title": record["title"] or "",
+                "abstract": record["abstract"] or "",
+                "doi": record["doi"] or "",
+                "journal": record["journal"] or "",
+                "publish_date": record["year"] or "",
+                "authors": [name for name in (record["authors"] or []) if name],
+            }
+        except Exception as exc:
+            logger.warning("Neo4j paper_details failed: %s", exc)
+            raise Neo4jStoreError(f"Neo4j paper_details failed: {exc}") from exc
+
+    def list_papers(self, limit: int = 20) -> list[dict[str, str]]:
+        """Return recently indexed papers as entry points for graph exploration."""
+        cypher = """
+            MATCH (p:Paper)
+            RETURN p.pmid AS pmid,
+                   p.title AS title,
+                   p.journal AS journal,
+                   p.year AS publish_date
+            ORDER BY p.updated_at DESC, p.pmid DESC
+            LIMIT $limit
+        """
+        try:
+            with self.driver.session(database=self.database) as session:
+                result = session.run(cypher, limit=max(1, min(int(limit), 100)))
+                return [
+                    {
+                        "pmid": str(record["pmid"] or ""),
+                        "title": record["title"] or "",
+                        "journal": record["journal"] or "",
+                        "publish_date": record["publish_date"] or "",
+                    }
+                    for record in result
+                ]
+        except Exception as exc:
+            logger.warning("Neo4j list_papers failed: %s", exc)
+            raise Neo4jStoreError(f"Neo4j list_papers failed: {exc}") from exc
+
     # ------------------------------------------------------------------
     # Article helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _author_name(author: Any) -> str:
+        """Build a stable display name without collapsing authors to surnames."""
+        if isinstance(author, str):
+            return author.strip()
+        if not isinstance(author, dict):
+            return ""
+        explicit = str(author.get("name", "") or "").strip()
+        if explicit:
+            return explicit
+        last_name = str(author.get("last_name", "") or "").strip()
+        given_name = str(
+            author.get("fore_name", "") or author.get("initials", "") or ""
+        ).strip()
+        return " ".join(part for part in (last_name, given_name) if part)
 
     @staticmethod
     def _payload(article: Any) -> dict[str, Any]:

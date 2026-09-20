@@ -1,9 +1,13 @@
 // Lightweight fetch wrapper around the FastAPI backend.
 // In development the Vite server proxies /api -> http://localhost:8000.
 
-import { ElMessage } from 'element-plus'
+import { ElMessage } from 'element-plus/es/components/message/index'
 
 const BASE = import.meta.env.VITE_API_BASE || '/api/v1'
+
+export function apiUrl(path: string): string {
+  return `${BASE}${path}`
+}
 
 export class ApiError extends Error {
   status: number
@@ -17,7 +21,7 @@ export class ApiError extends Error {
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   let resp: Response
   try {
-    resp = await fetch(`${BASE}${path}`, {
+    resp = await fetch(apiUrl(path), {
       headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
       ...options
     })

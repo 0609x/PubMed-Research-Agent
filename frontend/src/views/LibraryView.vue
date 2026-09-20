@@ -68,7 +68,8 @@
 
 <script setup lang="ts">
 import { reactive } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus/es/components/message/index'
+import { ElMessageBox } from 'element-plus/es/components/message-box/index'
 import CopyButton from '@/components/CopyButton.vue'
 import { translateText } from '@/api/translate'
 import { notifyError } from '@/api/http'

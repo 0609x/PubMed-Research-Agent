@@ -11,6 +11,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 
 from backend.agents.query_rewrite import QueryRewriter
+from backend.services.prompt_cache import PromptCache
 
 
 @pytest.fixture
@@ -78,3 +79,21 @@ class TestRewrite:
     def test_expand_with_synonyms(self, rewriter):
         out = rewriter.expand_with_synonyms("lung cancer treatment")
         assert "NSCLC" in out
+
+    def test_shared_cache_reuses_rewrite_across_agents(self, tmp_path):
+        cache = PromptCache(cache_dir=str(tmp_path / "shared-cache"))
+        first_llm = MagicMock()
+        first_llm._call_llm.return_value = (
+            '{"pubmed_query": "SEC61G[Title/Abstract]", "concepts": ["SEC61G"]}'
+        )
+        second_llm = MagicMock()
+
+        first = QueryRewriter(first_llm, cache=cache)
+        second = QueryRewriter(second_llm, cache=cache)
+
+        assert first.rewrite("SEC61G")["cached"] is False
+        reused = second.rewrite("SEC61G")
+
+        assert reused["cached"] is True
+        assert reused["pubmed_query"] == "SEC61G[Title/Abstract]"
+        second_llm._call_llm.assert_not_called()

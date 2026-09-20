@@ -180,13 +180,26 @@ def test_related_papers_uses_undirected_pattern(store):
 
 def test_related_papers_returns_rows(store):
     store.driver.result_records = [
-        {"pmid": "200", "title": "Other paper", "overlap": 2},
-        {"pmid": "300", "title": "Third paper", "overlap": 1},
+        {
+            "pmid": "200",
+            "title": "Other paper",
+            "overlap": 2,
+            "shared_authors": ["Smith J"],
+            "shared_journals": ["Cancer Res"],
+        },
+        {
+            "pmid": "300",
+            "title": "Third paper",
+            "overlap": 1,
+            "shared_authors": [],
+            "shared_journals": ["Cancer Res"],
+        },
     ]
     rows = store.related_papers("1", limit=5)
     assert len(rows) == 2
     assert rows[0]["pmid"] == "200"
     assert rows[0]["overlap"] == 2
+    assert rows[0]["shared_authors"] == ["Smith J"]
 
 
 def test_stats_returns_counts(store):
@@ -205,8 +218,20 @@ def test_subgraph_builds_nodes_and_links(monkeypatch, store):
         store,
         "related_papers",
         lambda pmid, limit=10: [
-            {"pmid": "200", "title": "Other paper", "overlap": 2},
-            {"pmid": "300", "title": "Third paper", "overlap": 1},
+            {
+                "pmid": "200",
+                "title": "Other paper",
+                "overlap": 2,
+                "shared_authors": ["Wang"],
+                "shared_journals": [],
+            },
+            {
+                "pmid": "300",
+                "title": "Third paper",
+                "overlap": 1,
+                "shared_authors": ["Li"],
+                "shared_journals": ["Cancer Res"],
+            },
         ],
     )
 
@@ -216,13 +241,6 @@ def test_subgraph_builds_nodes_and_links(monkeypatch, store):
 
         def single(self):
             return self.rec
-
-    class _Rows:
-        def __init__(self, rows):
-            self.rows = rows
-
-        def __iter__(self):
-            return iter(self.rows)
 
     class _ScriptedSession:
         def __enter__(self):
@@ -240,11 +258,7 @@ def test_subgraph_builds_nodes_and_links(monkeypatch, store):
                         "journals": ["Cancer Res"],
                     }
                 )
-            if params.get("other") == "200":
-                return _Rows([{"stype": "Author", "sname": "Wang"}])
-            return _Rows(
-                [{"stype": "Journal", "sname": "Cancer Res"}, {"stype": "Author", "sname": "Li"}]
-            )
+            raise AssertionError("subgraph should reuse related_papers relationship reasons")
 
     class _Driver:
         def session(self, database=None):
@@ -271,6 +285,51 @@ def test_subgraph_builds_nodes_and_links(monkeypatch, store):
     assert ("paper:1", "paper:200", "RELATED") in link_types
     assert ("author:Wang", "paper:200", "AUTHORED") in link_types
     assert ("journal:Cancer Res", "paper:300", "PUBLISHED_IN") in link_types
+
+
+def test_paper_details_returns_metadata(store):
+    store.driver.result_records = [
+        {
+            "pmid": "100",
+            "title": "Paper title",
+            "abstract": "Paper abstract",
+            "doi": "10.1/test",
+            "year": "2025",
+            "journal": "Cancer Res",
+            "authors": ["Smith John", "Wang Li"],
+        }
+    ]
+    detail = store.paper_details("100")
+    assert detail is not None
+    assert detail["pmid"] == "100"
+    assert detail["authors"] == ["Smith John", "Wang Li"]
+    assert detail["publish_date"] == "2025"
+
+
+def test_author_name_keeps_given_name():
+    assert Neo4jGraphStore._author_name(
+        {"last_name": "Smith", "fore_name": "John", "initials": "J"}
+    ) == "Smith John"
+
+
+def test_list_papers_returns_recent_entry_points(store):
+    store.driver.result_records = [
+        {
+            "pmid": "100",
+            "title": "Recent paper",
+            "journal": "Cancer Res",
+            "publish_date": "2025",
+        }
+    ]
+    papers = store.list_papers(limit=10)
+    assert papers == [
+        {
+            "pmid": "100",
+            "title": "Recent paper",
+            "journal": "Cancer Res",
+            "publish_date": "2025",
+        }
+    ]
 
 
 def test_is_ready(store):

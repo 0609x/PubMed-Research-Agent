@@ -45,6 +45,8 @@ Thumbs.db
 # Logs
 *.log
 logs/
+backups/*.dump
 
 # Test cache
 .pytest_cache/
+.tmp/

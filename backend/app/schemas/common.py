@@ -13,3 +13,7 @@ class HealthResponse(BaseModel):
     status: str
     app_name: str
     app_version: str
+
+
+class ReadinessResponse(HealthResponse):
+    components: dict[str, str]

@@ -43,7 +43,7 @@
 | `services/` | `hybrid_search.py` | 226 | 6.6% | 混合检索：关键词+语义 RRF 融合 |
 | `services/` | `reranker.py` | 191 | 5.6% | 精排重排序：Pointwise/Listwise |
 | `services/` | `context_compressor.py` | 207 | 6.0% | 上下文压缩：摘要 token 削减 |
-| `services/` | `prompt_cache.py` | 120 | 3.5% | 提示缓存：SHA256+TTL 磁盘缓存 |
+| `services/` | `prompt_cache.py` | — | — | 提示缓存：Redis 共享 TTL 缓存、分布式防击穿锁；磁盘后端仅供离线开发 |
 | `services/` | `memory.py` | 141 | 4.1% | 对话记忆：多轮会话持久化 |
 | `frontend/` | `app.py` | 658 | 19.2% | Streamlit 前端主页面 |
 | `frontend/` | `api_client.py` | 55 | 1.6% | Agent 调用封装层 |
@@ -75,7 +75,7 @@ PubMed-Research-Agent/
 │   ├── hybrid_search.py             # 混合检索（关键词+语义+RRF融合）
 │   ├── reranker.py                  # 精排重排序（Pointwise/Listwise/Fast）
 │   ├── context_compressor.py        # 上下文压缩（Token削减60-80%）
-│   ├── prompt_cache.py              # 提示缓存（SHA256+TTL磁盘缓存）
+│   ├── prompt_cache.py              # Redis 共享提示缓存（TTL + 分布式锁）
 │   └── memory.py                    # 对话记忆（多轮会话持久化）
 │
 ├── tools/                           # 外部工具封装  (406 行)
@@ -212,17 +212,18 @@ PubMed-Research-Agent/
 
 | 属性 | 值 |
 |------|-----|
-| 代码行数 | 120 |
+| 代码行数 | 约 260 |
 | 核心类 | `PromptCache` |
-| 策略 | SHA256 哈希 + TTL 过期 + LRU 淘汰 |
-| 外部依赖 | 无（仅标准库） |
+| 策略 | SHA256 哈希 + Redis TTL + 分布式锁 |
+| 外部依赖 | Redis（线上）；磁盘后端仅用于离线开发与测试 |
 
 **功能清单：**
-- `get_or_compute()`：缓存命中 0ms 返回，未命中自动计算并缓存
-- 磁盘持久化（JSON 文件）+ 内存热缓存
-- TTL 自动过期（默认 24h）
-- LRU 淘汰（默认 1000 条上限）
-- `stats()` 统计：总条目数、新鲜条目数、过期条目数
+- `get_or_compute()`：跨 Worker 复用结果，未命中时自动计算并缓存
+- Redis 分布式锁抑制相同请求同时击穿到 LLM
+- Redis TTL 自动过期（默认 24h），DB 1 与任务队列隔离
+- Redis 不可用时放弃缓存但不阻断检索任务
+- 磁盘 JSON 后端仅供显式的离线开发与单元测试
+- 查询翻译、PubMed 检索式改写和最终摘要共享同一缓存服务
 
 ---
 

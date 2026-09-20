@@ -15,12 +15,21 @@
         :key="n.id"
         :transform="`translate(${pos(n.id).x},${pos(n.id).y})`"
         class="g-node"
+        role="button"
+        tabindex="0"
         @pointerdown.stop="startDrag(n, $event)"
-        @dblclick.stop="onDbl(n)"
+        @click.stop="onClick(n)"
+        @keydown.enter.prevent="selectNode(n)"
+        @keydown.space.prevent="selectNode(n)"
       >
+        <title>{{ nodeTooltip(n) }}</title>
         <circle
           :r="nodeRadius(n)"
-          :class="['node-shape', `node-${n.type}`, { 'is-center': n.id === centerId }]"
+          :class="[
+            'node-shape',
+            `node-${n.type}`,
+            { 'is-center': n.id === centerId, 'is-selected': n.id === selectedId }
+          ]"
         />
         <text :y="nodeRadius(n) + 13" class="node-label">{{ shortLabel(n) }}</text>
       </g>
@@ -30,7 +39,7 @@
       <span class="legend-item"><i class="dot dot-author" />作者</span>
       <span class="legend-item"><i class="dot dot-journal" />期刊</span>
       <span class="legend-item"><i class="line-dot edge-related" />关联</span>
-      <span class="tip">拖拽移动节点 · 双击文献节点继续探索</span>
+      <span class="tip">拖拽移动节点 · 单击文献节点继续探索</span>
     </div>
   </div>
 </template>
@@ -43,9 +52,10 @@ const props = defineProps<{
   nodes: GraphNode[]
   links: GraphLink[]
   centerId?: string
+  selectedId?: string
 }>()
 
-const emit = defineEmits<{ (e: 'select', pmid: string): void }>()
+const emit = defineEmits<{ (e: 'select', node: GraphNode): void }>()
 
 const W = 760
 const H = 520
@@ -154,9 +164,11 @@ function layout(): void {
 }
 
 let dragStart = { x: 0, y: 0, nx: 0, ny: 0 }
+let dragMoved = false
 
 function startDrag(n: GraphNode, ev: PointerEvent): void {
   drag.value = n.id
+  dragMoved = false
   const p = positions[n.id]
   dragStart = { x: ev.clientX, y: ev.clientY, nx: p.x, ny: p.y }
   window.addEventListener('pointermove', onMove)
@@ -167,6 +179,9 @@ function onMove(ev: PointerEvent): void {
   if (!drag.value) return
   const p = positions[drag.value]
   if (!p) return
+  if (Math.abs(ev.clientX - dragStart.x) > 4 || Math.abs(ev.clientY - dragStart.y) > 4) {
+    dragMoved = true
+  }
   p.x = Math.max(30, Math.min(W - 30, dragStart.nx + (ev.clientX - dragStart.x)))
   p.y = Math.max(30, Math.min(H - 30, dragStart.ny + (ev.clientY - dragStart.y)))
 }
@@ -177,8 +192,21 @@ function onUp(): void {
   window.removeEventListener('pointerup', onUp)
 }
 
-function onDbl(n: GraphNode): void {
-  if (n.type === 'paper' && n.pmid) emit('select', n.pmid)
+function onClick(n: GraphNode): void {
+  if (dragMoved) {
+    dragMoved = false
+    return
+  }
+  selectNode(n)
+}
+
+function selectNode(n: GraphNode): void {
+  emit('select', n)
+}
+
+function nodeTooltip(n: GraphNode): string {
+  const action = n.type === 'paper' ? '单击设为中心并加载详情' : '单击查看关系'
+  return `${n.label || n.id}（${action}）`
 }
 
 watch(() => [props.nodes, props.links], () => layout(), { deep: true })
@@ -230,6 +258,18 @@ layout()
 }
 .is-center {
   stroke: #f59e0b;
+  stroke-width: 3.5;
+}
+.is-selected {
+  filter: drop-shadow(0 0 6px rgb(64 158 255 / 70%));
+  stroke: #1d4ed8;
+  stroke-width: 3.5;
+}
+.g-node:focus {
+  outline: none;
+}
+.g-node:focus .node-shape {
+  stroke: #1d4ed8;
   stroke-width: 3.5;
 }
 .node-label {

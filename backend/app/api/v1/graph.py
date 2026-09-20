@@ -10,7 +10,13 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException
 
 from backend.app.core.config import settings
-from backend.app.schemas.graph import GraphStatsOut, GraphSubgraphOut, RelatedPapersOut
+from backend.app.schemas.graph import (
+    GraphPaperOut,
+    GraphPapersOut,
+    GraphStatsOut,
+    GraphSubgraphOut,
+    RelatedPapersOut,
+)
 from backend.services.agent_factory import build_graph_store
 from backend.services.neo4j_store import Neo4jGraphStore
 
@@ -78,3 +84,35 @@ async def related_papers(pmid: str, limit: int = 10) -> RelatedPapersOut:
     except Exception as exc:
         logger.exception("Related papers query failed")
         raise HTTPException(status_code=500, detail=f"Related papers query failed: {exc}")
+
+
+@router.get("/paper/{pmid}", response_model=GraphPaperOut)
+async def graph_paper(pmid: str) -> GraphPaperOut:
+    """Return paper metadata so graph discoveries can be inspected and saved."""
+    store = get_graph_store()
+    if store is None:
+        raise HTTPException(status_code=503, detail="Neo4j graph store is not configured")
+    try:
+        data = await asyncio.to_thread(store.paper_details, pmid)
+        if data is None:
+            raise HTTPException(status_code=404, detail="Paper not found in knowledge graph")
+        return GraphPaperOut(**data)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Graph paper query failed")
+        raise HTTPException(status_code=500, detail=f"Graph paper query failed: {exc}")
+
+
+@router.get("/papers", response_model=GraphPapersOut)
+async def graph_papers(limit: int = 20) -> GraphPapersOut:
+    """List recently indexed papers so researchers have useful graph entry points."""
+    store = get_graph_store()
+    if store is None:
+        raise HTTPException(status_code=503, detail="Neo4j graph store is not configured")
+    try:
+        rows = await asyncio.to_thread(store.list_papers, max(1, min(limit, 100)))
+        return GraphPapersOut(papers=rows)
+    except Exception as exc:
+        logger.exception("Graph paper listing failed")
+        raise HTTPException(status_code=500, detail=f"Graph paper listing failed: {exc}")

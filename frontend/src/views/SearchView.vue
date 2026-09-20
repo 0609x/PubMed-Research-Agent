@@ -26,29 +26,53 @@
         >
           {{ store.loading ? '分析中…' : '开始检索' }}
         </el-button>
+        <el-button v-if="store.loading" type="danger" plain size="large" @click="store.cancel()">
+          取消任务
+        </el-button>
+      </div>
+
+      <div v-if="store.job" class="job-progress">
+        <div class="job-progress-head">
+          <span>{{ store.jobStatusText }}</span>
+          <span class="job-id">任务 {{ store.job.job_id.slice(0, 8) }}</span>
+        </div>
+        <el-progress
+          :percentage="store.progressPercent"
+          :indeterminate="store.loading && store.job.progress_percent < 10"
+          :duration="3"
+          :status="store.job.status === 'failed' ? 'exception' : (store.job.status === 'completed' || store.job.status === 'partial') ? 'success' : undefined"
+        />
       </div>
 
       <div class="options-row">
-        <span class="opt-label">检索方式</span>
-        <el-radio-group v-model="store.searchMode" size="small">
-          <el-radio-button value="advanced">高级检索</el-radio-button>
-          <el-radio-button value="keyword">关键词检索</el-radio-button>
-        </el-radio-group>
-        <span class="opt-label" style="margin-left: 20px">排序</span>
-        <el-select v-model="store.sortBy" size="small" style="width: 120px">
-          <el-option value="relevance" label="相关度" />
-          <el-option value="date_desc" label="最新优先" />
-          <el-option value="date_asc" label="最早优先" />
-        </el-select>
-        <span class="opt-label" style="margin-left: 20px">输出语言</span>
-        <el-radio-group v-model="store.language" size="small">
-          <el-radio-button value="en">English</el-radio-button>
-          <el-radio-button value="zh">中文</el-radio-button>
-        </el-radio-group>
-        <span class="opt-label" style="margin-left: 20px">Top N</span>
-        <el-select v-model="store.maxResults" size="small" style="width: 100px">
-          <el-option v-for="n in [5, 10, 20, 30]" :key="n" :value="n" :label="`${n} 篇`" />
-        </el-select>
+        <div class="option-item">
+          <span class="opt-label">检索方式</span>
+          <el-select v-model="store.searchMode" size="small" style="width: 130px">
+            <el-option value="advanced" label="高级检索" />
+            <el-option value="keyword" label="关键词检索" />
+          </el-select>
+        </div>
+        <div class="option-item">
+          <span class="opt-label">排序</span>
+          <el-select v-model="store.sortBy" size="small" style="width: 120px">
+            <el-option value="relevance" label="相关度" />
+            <el-option value="date_desc" label="最新优先" />
+            <el-option value="date_asc" label="最早优先" />
+          </el-select>
+        </div>
+        <div class="option-item">
+          <span class="opt-label">输出语言</span>
+          <el-select v-model="store.language" size="small" style="width: 120px">
+            <el-option value="en" label="English" />
+            <el-option value="zh" label="中文" />
+          </el-select>
+        </div>
+        <div class="option-item">
+          <span class="opt-label">Top N</span>
+          <el-select v-model="store.maxResults" size="small" style="width: 100px">
+            <el-option v-for="n in [5, 10, 20, 30]" :key="n" :value="n" :label="`${n} 篇`" />
+          </el-select>
+        </div>
       </div>
 
       <div class="options-row">
@@ -168,7 +192,27 @@ onMounted(() => {
 .options-row {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  gap: 12px 20px;
   margin-top: 12px;
+}
+.option-item {
+  display: flex;
+  align-items: center;
+}
+.job-progress {
+  margin-top: 16px;
+}
+.job-progress-head {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  color: var(--el-text-color-regular);
+  font-size: 13px;
+}
+.job-id {
+  color: var(--el-text-color-secondary);
+  font-family: monospace;
 }
 .opt-label {
   color: var(--el-text-color-secondary);

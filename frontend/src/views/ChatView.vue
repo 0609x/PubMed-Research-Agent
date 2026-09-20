@@ -3,12 +3,12 @@
     <el-card shadow="never" class="chat-card">
       <template #header>
         <div class="chat-head">
-          <span class="chat-title">AI 文献问答（RAG）</span>
+          <span class="chat-title">AI 收藏文献问答（{{ store.libraryCount }} 篇）</span>
           <div class="chat-options">
-            <el-radio-group v-model="store.language" size="small">
-              <el-radio-button value="en">English</el-radio-button>
-              <el-radio-button value="zh">中文</el-radio-button>
-            </el-radio-group>
+            <el-select v-model="store.language" size="small" style="width: 110px">
+              <el-option value="zh" label="中文回答" />
+              <el-option value="en" label="English" />
+            </el-select>
             <el-select v-model="store.topK" size="small" style="width: 110px; margin-left: 12px">
               <el-option v-for="n in [3, 5, 8, 10]" :key="n" :value="n" :label="`Top ${n}`" />
             </el-select>
@@ -20,7 +20,7 @@
       <div class="chat-body" ref="bodyRef">
         <el-empty
           v-if="!store.turns.length"
-          description="基于已入库文献提问，例如：SEC61G 在肺癌中的作用机制？"
+          :description="store.libraryCount ? '仅基于收藏文献提问，例如：这些研究采用了哪些实验方法？' : '收藏夹为空，请先在检索结果中收藏文献'"
           :image-size="90"
         />
         <div v-for="(turn, i) in store.turns" :key="i" :class="['turn', turn.role]">
@@ -50,7 +50,7 @@
         <div v-if="store.loading" class="turn assistant">
           <div class="bubble">
             <el-icon class="is-loading"><Loading /></el-icon>
-            <span style="margin-left: 8px">正在检索文献并生成答案…</span>
+            <span style="margin-left: 8px">正在从收藏文献中检索证据并生成答案…</span>
           </div>
         </div>
       </div>
@@ -61,9 +61,10 @@
           size="large"
           placeholder="输入你的问题…"
           clearable
+          :disabled="!store.libraryCount"
           @keyup.enter="send"
         />
-        <el-button type="primary" size="large" :loading="store.loading" @click="send">
+        <el-button type="primary" size="large" :loading="store.loading" :disabled="!store.libraryCount" @click="send">
           发送
         </el-button>
       </div>

@@ -10,10 +10,8 @@ Problem Solved:
 
 How It Works:
     1. Keyword search: PubMedSearchTool returns results ranked by relevance
-    2. Semantic search: embed query and rank candidates. When a persistent
-       Qdrant vector store is available, semantic ranking runs against it
-       (after upserting the keyword pool); otherwise an in-batch embedding
-       fallback is used.
+    2. Semantic search: embed the query and current PubMed candidates in one
+       batch, then rank them locally by cosine similarity.
     3. Reciprocal Rank Fusion (RRF): merges both ranked lists into one.
 
     RRF formula: score(d) = sum(1 / (k + rank_i(d))) for each ranker i
@@ -28,8 +26,6 @@ Usage:
     searcher = HybridSearcher(pubmed_tool, embedding_client)
     results = searcher.search("SEC61G in lung cancer", top_k=20)
 
-    # With a persistent Qdrant store:
-    searcher = HybridSearcher(pubmed_tool, embedding_client, vector_store=store)
 """
 
 from __future__ import annotations
@@ -148,22 +144,16 @@ class HybridSearcher:
         Keyword-based PubMed search tool.
     embed_client : EmbeddingClient, optional
         Embedding API client used for the in-batch semantic fallback.
-    vector_store : optional
-        Persistent QdrantVectorStore. When provided, semantic ranking is
-        delegated to the store (articles are upserted first); the store is
-        preferred over in-batch embedding and falls back gracefully on errors.
     """
 
     def __init__(
         self,
         pubmed_tool: PubMedSearchTool,
         embed_client: Optional[EmbeddingClient] = None,
-        vector_store: Any = None,
     ) -> None:
         self.pubmed = pubmed_tool
         self.embed = embed_client
-        self.vector_store = vector_store
-        logger.info("HybridSearcher initialized (vector_store=%s)", bool(vector_store))
+        logger.info("HybridSearcher initialized (embedding=%s)", bool(embed_client))
 
     def search(
         self,
@@ -195,7 +185,7 @@ class HybridSearcher:
         keyword_result = self.pubmed.search(query, max_results=keyword_k)
         keyword_ids = [a.pmid for a in keyword_result.articles]
 
-        # 2. Semantic search (Qdrant store if available, else in-batch)
+        # 2. Semantic search over the current candidate batch
         semantic_ids = self._semantic_search(query, keyword_result.articles, top_k)
 
         # 3. Reciprocal Rank Fusion
@@ -226,42 +216,12 @@ class HybridSearcher:
     ) -> list[str]:
         """Rank articles semantically, restricted to the current keyword pool.
 
-        Resolution order:
-            1. Qdrant vector store (persistent, preferred)
-            2. In-batch embedding via EmbeddingClient
-            3. Keyword order (both unavailable/failed -> graceful degradation)
+        Uses in-batch embeddings when configured and falls back to the PubMed
+        keyword order when the embedding service is unavailable.
         """
         if not articles:
             return []
 
-        pool = {a.pmid for a in articles}
-
-        # 1. Persistent vector store path
-        if self.vector_store is not None:
-            try:
-                self.vector_store.upsert_articles(articles)
-                hits = self.vector_store.semantic_search(query, top_k=top_k)
-                ordered = [
-                    str(h.get("pmid", ""))
-                    for h in hits
-                    if h.get("pmid") in pool
-                ]
-                # Keep the rest of the pool so RRF still covers all articles
-                ordered += [a.pmid for a in articles if a.pmid not in set(ordered)]
-                logger.info(
-                    "Semantic search via Qdrant: %d hits for query=%r",
-                    len(ordered),
-                    query[:60],
-                )
-                return ordered[:top_k]
-            except Exception as exc:
-                logger.warning(
-                    "Qdrant semantic search failed, falling back to in-batch "
-                    "embedding: %s",
-                    exc,
-                )
-
-        # 2. In-batch embedding path
         if self.embed is None:
             return [a.pmid for a in articles]
 
